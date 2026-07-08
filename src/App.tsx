@@ -7,7 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // ---------------------------------------------------------------------------
 
 type Kind = "楽しみ" | "習慣" | "振り返り" | "作業";
-type RepeatType = "weekly" | "monthly" | "none";
+// single＝単発在庫（楽しみ専用）。自動生成せず、在庫タブで手で積む
+type RepeatType = "weekly" | "monthly" | "none" | "single";
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 type Item = {
@@ -23,6 +24,14 @@ type Item = {
   memo: string;
   createdAt: string;
   updatedAt: string;
+};
+
+// 単発在庫に手で積んだ1件（未消化）。消化するとここから消え、Completionになる
+type StockEntry = {
+  id: string;
+  itemId: string;
+  label: string; // 積んだ名前（任意。例：国宝）
+  addedAt: string;
 };
 
 type Completion = {
@@ -47,6 +56,7 @@ type AppData = {
   version: 1;
   items: Item[];
   completions: Completion[];
+  stockEntries: StockEntry[];
   settings: Settings;
 };
 
@@ -76,6 +86,7 @@ type ImportPreview = {
   sourceLabel: string;
   incomingItems: Item[];
   incomingCompletions: Completion[];
+  incomingStockEntries: StockEntry[];
   adoptDayBoundary: string | null;
   counts: ImportCount[];
 };
@@ -84,11 +95,14 @@ type EnrichTarget = {
   completionId: string;
   title: string;
   dateLabel: string;
+  // 単発在庫の消化なら、取り消し時に積みへ戻すため元エントリを控える（数量入力も出さない）
+  consumedStockEntry?: StockEntry;
 };
 
 type DatePickTarget = {
   item: Item;
   slotDate: string | null; // 在庫型は対象日固定。前回日型は null（選んだ日がそのまま対象日）
+  stockEntry?: StockEntry; // 単発在庫の消化なら対象エントリ
 };
 
 type StatRow = {
@@ -126,6 +140,7 @@ const DEFAULT_DATA: AppData = {
   version: 1,
   items: [],
   completions: [],
+  stockEntries: [],
   settings: DEFAULT_SETTINGS,
 };
 
@@ -230,7 +245,7 @@ function isItem(value: unknown): value is Item {
     typeof item.title === "string" &&
     typeof item.category === "string" &&
     isKind(item.kind) &&
-    (item.repeatType === "weekly" || item.repeatType === "monthly" || item.repeatType === "none") &&
+    (item.repeatType === "weekly" || item.repeatType === "monthly" || item.repeatType === "none" || item.repeatType === "single") &&
     (item.weekday === null || isWeekdayValue(item.weekday)) &&
     (item.monthDay === null || typeof item.monthDay === "number") &&
     typeof item.isActive === "boolean" &&
@@ -257,6 +272,17 @@ function isCompletion(value: unknown): value is Completion {
   );
 }
 
+function isStockEntry(value: unknown): value is StockEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.itemId === "string" &&
+    typeof entry.label === "string" &&
+    typeof entry.addedAt === "string"
+  );
+}
+
 function normalizeSettings(raw: unknown): Settings {
   const settings = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const dayBoundaryTime = DAY_BOUNDARY_OPTIONS.includes(String(settings.dayBoundaryTime))
@@ -274,10 +300,13 @@ function normalizeAppData(raw: unknown): AppData | null {
   const data = raw as Record<string, unknown>;
   if (!Array.isArray(data.items) || !data.items.every(isItem)) return null;
   if (!Array.isArray(data.completions) || !data.completions.every(isCompletion)) return null;
+  // stockEntries はv2追加。無い/不正なら空として扱い、v1データをそのまま通す
+  const stockEntries = Array.isArray(data.stockEntries) && data.stockEntries.every(isStockEntry) ? data.stockEntries : [];
   return {
     version: 1,
     items: data.items,
     completions: data.completions,
+    stockEntries,
     settings: normalizeSettings(data.settings),
   };
 }
@@ -358,9 +387,14 @@ function convertOldBackup(raw: Record<string, unknown>): { items: Item[]; comple
 
 // ----------------------------- 表示ロジック -----------------------------
 
-// 在庫型：楽しみ × 繰り返しあり。それ以外（習慣・振り返り・作業・随時もの）は前回日型
+// 在庫型：楽しみ × 繰り返しあり or 単発在庫。それ以外（習慣・振り返り・作業・随時もの）は前回日型
 function isInventoryItem(item: Item) {
   return item.kind === "楽しみ" && item.repeatType !== "none";
+}
+
+// 単発在庫：楽しみ専用。対象日を自動生成せず、手で積む
+function isSingleStockItem(item: Item) {
+  return item.kind === "楽しみ" && item.repeatType === "single";
 }
 
 function matchesRepeatRule(item: Item, date: Date) {
@@ -459,15 +493,25 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
   lines.push("## 項目一覧");
   lines.push("");
   for (const item of data.items) {
-    const shape = isInventoryItem(item) ? "在庫型" : "前回日型";
+    const shape = isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型";
     const repeat =
       item.repeatType === "weekly" && item.weekday !== null
         ? `毎週${WEEKDAY_LABELS[item.weekday]}曜`
         : item.repeatType === "monthly" && item.monthDay !== null
           ? `毎月${item.monthDay}日`
-          : "随時";
+          : item.repeatType === "single"
+            ? "手で積む"
+            : "随時";
     const active = item.isActive ? "" : "（停止中）";
     lines.push(`- [${shape}] ${item.title}（${item.kind}／${item.category}／${repeat}）${active}`);
+    if (isSingleStockItem(item)) {
+      const entries = data.stockEntries
+        .filter((entry) => entry.itemId === item.id)
+        .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
+      for (const entry of entries) {
+        lines.push(`  - 積み：${entry.label || "（名前なし）"}`);
+      }
+    }
   }
   lines.push("");
 
@@ -580,6 +624,9 @@ export default function App() {
   const [datePickTarget, setDatePickTarget] = useState<DatePickTarget | null>(null);
   const [pickedDate, setPickedDate] = useState("");
 
+  // 単発在庫：箱ごとの「積む」入力欄
+  const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
+
   // 設定タブ：項目フォーム
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ItemDraft | null>(null);
@@ -612,13 +659,30 @@ export default function App() {
   const inventoryItems = useMemo(
     () =>
       data.items
-        .filter((item) => item.isActive && isInventoryItem(item))
+        .filter((item) => item.isActive && isInventoryItem(item) && !isSingleStockItem(item))
         .map((item) => ({ item, dates: inventoryDates(item, completedKeys, todayLife) }))
         .sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
     [data.items, completedKeys, todayLife],
   );
 
-  const inventoryTotal = inventoryItems.reduce((sum, entry) => sum + entry.dates.length, 0);
+  // 単発在庫の箱。積んだものは追加順（addedAt順）で表示する
+  const singleStockItems = useMemo(
+    () =>
+      data.items
+        .filter((item) => item.isActive && isSingleStockItem(item))
+        .map((item) => ({
+          item,
+          entries: data.stockEntries
+            .filter((entry) => entry.itemId === item.id)
+            .sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
+        }))
+        .sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
+    [data.items, data.stockEntries],
+  );
+
+  const inventoryTotal =
+    inventoryItems.reduce((sum, entry) => sum + entry.dates.length, 0) +
+    singleStockItems.reduce((sum, entry) => sum + entry.entries.length, 0);
 
   const lastItems = useMemo(
     () =>
@@ -670,6 +734,44 @@ export default function App() {
     setMessage(null);
   }
 
+  // 単発在庫に1件積む。名前は任意（空でも積める）
+  function addStockEntry(item: Item) {
+    const label = (stockDrafts[item.id] ?? "").trim();
+    const entry: StockEntry = { id: genId(), itemId: item.id, label, addedAt: nowLocalStamp() };
+    setData((current) => ({ ...current, stockEntries: [...current.stockEntries, entry] }));
+    setStockDrafts((current) => ({ ...current, [item.id]: "" }));
+    setMessage(null);
+  }
+
+  // 単発在庫の消化：積みから外して完了ログへ。titleSnapshotは積んだ名前（空なら箱の名前）
+  function consumeStockEntry(item: Item, entry: StockEntry, doneDate: string | null) {
+    const completion: Completion = {
+      id: genId(),
+      itemId: item.id,
+      targetDate: doneDate ?? todayLife,
+      completedAt: doneDate ? `${doneDate}T12:00:00` : nowLocalStamp(),
+      titleSnapshot: entry.label || item.title,
+      categorySnapshot: item.category,
+      kindSnapshot: item.kind,
+      note: "",
+      count: null,
+    };
+    setData((current) => ({
+      ...current,
+      completions: [completion, ...current.completions],
+      stockEntries: current.stockEntries.filter((stock) => stock.id !== entry.id),
+    }));
+    setEnrichTarget({
+      completionId: completion.id,
+      title: completion.titleSnapshot,
+      dateLabel: formatDateWithWeekday(doneDate ?? todayLife),
+      consumedStockEntry: entry,
+    });
+    setEnrichNote("");
+    setEnrichCount("");
+    setMessage(null);
+  }
+
   function saveEnrichment() {
     if (!enrichTarget) return;
     const trimmedNote = enrichNote.trim();
@@ -689,23 +791,30 @@ export default function App() {
 
   function undoEnrichTarget() {
     if (!enrichTarget) return;
+    const restoredEntry = enrichTarget.consumedStockEntry;
     setData((current) => ({
       ...current,
       completions: current.completions.filter((completion) => completion.id !== enrichTarget.completionId),
+      // 単発在庫の消化を取り消したら、積みに戻す（表示はaddedAt順なので元の位置に戻る）
+      stockEntries: restoredEntry ? [...current.stockEntries, restoredEntry] : current.stockEntries,
     }));
     setEnrichTarget(null);
     setMessage({ type: "success", text: "記録を取り消しました" });
   }
 
-  function openDatePick(item: Item, slotDate: string | null) {
-    setDatePickTarget({ item, slotDate });
+  function openDatePick(item: Item, slotDate: string | null, stockEntry?: StockEntry) {
+    setDatePickTarget({ item, slotDate, stockEntry });
     setPickedDate(addDaysKey(todayLife, -1));
   }
 
   function confirmDatePick() {
     if (!datePickTarget || !pickedDate) return;
-    const { item, slotDate } = datePickTarget;
+    const { item, slotDate, stockEntry } = datePickTarget;
     setDatePickTarget(null);
+    if (stockEntry) {
+      consumeStockEntry(item, stockEntry, pickedDate);
+      return;
+    }
     recordCompletion(item, slotDate ?? pickedDate, pickedDate);
   }
 
@@ -753,9 +862,11 @@ export default function App() {
       setMessage({ type: "error", text: "カテゴリ名を入れてください" });
       return;
     }
-    const weekday = draft.repeatType === "weekly" ? (Number(draft.weekday) as Weekday) : null;
+    // 単発在庫は楽しみ専用。万一それ以外の種類のまま残っていたら随時に落とす
+    const repeatType: RepeatType = draft.repeatType === "single" && draft.kind !== "楽しみ" ? "none" : draft.repeatType;
+    const weekday = repeatType === "weekly" ? (Number(draft.weekday) as Weekday) : null;
     const monthDayNumber = Number(draft.monthDay);
-    const monthDay = draft.repeatType === "monthly" ? Math.min(Math.max(Math.round(monthDayNumber) || 1, 1), 31) : null;
+    const monthDay = repeatType === "monthly" ? Math.min(Math.max(Math.round(monthDayNumber) || 1, 1), 31) : null;
     const inventoryStartDate = /^\d{4}-\d{2}-\d{2}$/.test(draft.inventoryStartDate) ? draft.inventoryStartDate : undefined;
     const stamp = nowLocalStamp();
 
@@ -769,7 +880,7 @@ export default function App() {
           settings: { ...current.settings, categories },
           items: current.items.map((item) =>
             item.id === editingItemId
-              ? { ...item, title, category, kind: draft.kind, repeatType: draft.repeatType, weekday, monthDay, inventoryStartDate, memo: draft.memo.trim(), isActive: draft.isActive, updatedAt: stamp }
+              ? { ...item, title, category, kind: draft.kind, repeatType, weekday, monthDay, inventoryStartDate, memo: draft.memo.trim(), isActive: draft.isActive, updatedAt: stamp }
               : item,
           ),
         };
@@ -779,7 +890,7 @@ export default function App() {
         title,
         category,
         kind: draft.kind,
-        repeatType: draft.repeatType,
+        repeatType,
         weekday,
         monthDay,
         isActive: draft.isActive,
@@ -796,8 +907,12 @@ export default function App() {
   }
 
   function deleteItem(itemId: string) {
-    // titleSnapshot 方式なので、項目を消しても完了ログと集計は残る
-    setData((current) => ({ ...current, items: current.items.filter((item) => item.id !== itemId) }));
+    // titleSnapshot 方式なので、項目を消しても完了ログと集計は残る。未消化の積みは箱と一緒に消す
+    setData((current) => ({
+      ...current,
+      items: current.items.filter((item) => item.id !== itemId),
+      stockEntries: current.stockEntries.filter((entry) => entry.itemId !== itemId),
+    }));
     setDeleteTargetId(null);
     setMessage({ type: "success", text: "項目を削除しました（記録は残ります）" });
   }
@@ -822,6 +937,7 @@ export default function App() {
         const raw = JSON.parse(String(reader.result)) as Record<string, unknown>;
         let incomingItems: Item[] = [];
         let incomingCompletions: Completion[] = [];
+        let incomingStockEntries: StockEntry[] = [];
         let adoptDayBoundary: string | null = null;
         let sourceLabel = "";
 
@@ -829,6 +945,7 @@ export default function App() {
         if (asNew) {
           incomingItems = asNew.items;
           incomingCompletions = asNew.completions;
+          incomingStockEntries = asNew.stockEntries;
           sourceLabel = "かぞえ帳バックアップ";
         } else {
           const asOld = convertOldBackup(raw);
@@ -844,17 +961,21 @@ export default function App() {
 
         const existingItemIds = new Set(data.items.map((item) => item.id));
         const existingCompletionIds = new Set(data.completions.map((completion) => completion.id));
+        const existingStockEntryIds = new Set(data.stockEntries.map((entry) => entry.id));
         const addedItems = incomingItems.filter((item) => !existingItemIds.has(item.id));
         const addedCompletions = incomingCompletions.filter((completion) => !existingCompletionIds.has(completion.id));
+        const addedStockEntries = incomingStockEntries.filter((entry) => !existingStockEntryIds.has(entry.id));
 
         setImportPreview({
           sourceLabel,
           incomingItems: addedItems,
           incomingCompletions: addedCompletions,
+          incomingStockEntries: addedStockEntries,
           adoptDayBoundary,
           counts: [
             { label: "項目", loaded: incomingItems.length, added: addedItems.length, skipped: incomingItems.length - addedItems.length },
             { label: "完了ログ", loaded: incomingCompletions.length, added: addedCompletions.length, skipped: incomingCompletions.length - addedCompletions.length },
+            { label: "積んだもの（未消化）", loaded: incomingStockEntries.length, added: addedStockEntries.length, skipped: incomingStockEntries.length - addedStockEntries.length },
           ],
         });
       } catch {
@@ -875,6 +996,7 @@ export default function App() {
         ...current,
         items: [...current.items, ...importPreview.incomingItems],
         completions: [...importPreview.incomingCompletions, ...current.completions],
+        stockEntries: [...current.stockEntries, ...importPreview.incomingStockEntries],
         settings: {
           ...current.settings,
           categories,
@@ -952,9 +1074,9 @@ export default function App() {
                 {inventoryTotal > 0 ? `いま ${inventoryTotal} 回ぶん たまっています。どれ楽しむ？` : "在庫はぜんぶ楽しみ済み。次が積まれるのを待つだけ"}
               </p>
             </section>
-            {inventoryItems.length === 0 && (
+            {inventoryItems.length === 0 && singleStockItems.length === 0 && (
               <section className="section">
-                <p className="empty-text">在庫型の項目がまだありません。設定タブで「楽しみ × 毎週/毎月」の項目をつくると、ここに在庫が積まれていきます。</p>
+                <p className="empty-text">在庫型の項目がまだありません。設定タブで「楽しみ × 毎週/毎月」の項目や「単発在庫（手で積む）」の箱をつくると、ここに在庫が積まれていきます。</p>
               </section>
             )}
             {inventoryItems.map(({ item, dates }) => (
@@ -977,6 +1099,38 @@ export default function App() {
                       />
                     </div>
                   ))}
+                </div>
+              </section>
+            ))}
+            {/* 単発在庫の箱は繰り返し在庫の下に並べる（確定仕様） */}
+            {singleStockItems.map(({ item, entries }) => (
+              <section key={item.id} className="section inventory-card">
+                <div className="inventory-card-head">
+                  <h3>{item.title}</h3>
+                  <span className="count-chip">{entries.length > 0 ? `${entries.length}件` : "在庫なし"}</span>
+                </div>
+                {item.memo && <p className="item-memo">{item.memo}</p>}
+                {entries.length === 0 && <p className="small-note">積まれているものはありません。下の欄から積めます</p>}
+                <div className="inventory-date-list">
+                  {entries.map((entry) => (
+                    <div key={entry.id} className="inventory-date-row">
+                      <span>{entry.label || "（名前なし）"}</span>
+                      <RecordButton
+                        label="楽しんだ"
+                        className="enjoy-button"
+                        onTap={() => consumeStockEntry(item, entry, null)}
+                        onLongPress={() => openDatePick(item, null, entry)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="stock-add-row">
+                  <input
+                    value={stockDrafts[item.id] ?? ""}
+                    onChange={(event) => setStockDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                    placeholder="例：国宝（積むものの名前）"
+                  />
+                  <button type="button" className="primary-button" onClick={() => addStockEntry(item)}>積む</button>
                 </div>
               </section>
             ))}
@@ -1077,7 +1231,7 @@ export default function App() {
           <>
             <section className="section">
               <h2>項目</h2>
-              <p className="small-note">種類が「楽しみ × 毎週/毎月」なら在庫タブに、それ以外は前回タブに並びます</p>
+              <p className="small-note">種類が「楽しみ × 毎週/毎月/単発在庫」なら在庫タブに、それ以外は前回タブに並びます</p>
               {!draft && (
                 <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
                   ＋ 項目をつくる
@@ -1102,7 +1256,14 @@ export default function App() {
                     </label>
                     <label>
                       種類
-                      <select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value as Kind })}>
+                      <select
+                        value={draft.kind}
+                        onChange={(event) => {
+                          const kind = event.target.value as Kind;
+                          // 単発在庫は楽しみ専用なので、種類を変えたら繰り返しを戻す
+                          setDraft({ ...draft, kind, repeatType: kind !== "楽しみ" && draft.repeatType === "single" ? "weekly" : draft.repeatType });
+                        }}
+                      >
                         {KINDS.map((kind) => (
                           <option key={kind} value={kind}>{kind}</option>
                         ))}
@@ -1122,6 +1283,7 @@ export default function App() {
                         <option value="weekly">毎週</option>
                         <option value="monthly">毎月</option>
                         <option value="none">随時（ルールなし）</option>
+                        {draft.kind === "楽しみ" && <option value="single">単発在庫（手で積む）</option>}
                       </select>
                     </label>
                     {draft.repeatType === "weekly" && (
@@ -1141,7 +1303,7 @@ export default function App() {
                       </label>
                     )}
                   </div>
-                  {draft.kind === "楽しみ" && draft.repeatType !== "none" && (
+                  {draft.kind === "楽しみ" && (draft.repeatType === "weekly" || draft.repeatType === "monthly") && (
                     <label>
                       在庫の起点日（任意）
                       <input type="date" value={draft.inventoryStartDate} onChange={(event) => setDraft({ ...draft, inventoryStartDate: event.target.value })} />
@@ -1169,13 +1331,15 @@ export default function App() {
                       ? `毎週${WEEKDAY_LABELS[item.weekday]}`
                       : item.repeatType === "monthly" && item.monthDay !== null
                         ? `毎月${item.monthDay}日`
-                        : "随時";
+                        : item.repeatType === "single"
+                          ? "手で積む"
+                          : "随時";
                   return (
                     <div key={item.id} className={`item-row ${item.isActive ? "" : "inactive"}`}>
                       <div className="item-row-info">
                         <span className="item-row-title">{item.title}</span>
                         <span className="item-row-meta">
-                          {isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.kind}・{item.category}・{repeatLabel}
+                          {isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.kind}・{item.category}・{repeatLabel}
                           {item.isActive ? "" : "・停止中"}
                         </span>
                       </div>
@@ -1266,15 +1430,18 @@ export default function App() {
             <p>
               {enrichTarget.title}（{enrichTarget.dateLabel}）
             </p>
-            <p className="small-note">よければメモや数量を足せます。どちらも空のままで大丈夫</p>
+            <p className="small-note">{enrichTarget.consumedStockEntry ? "よければメモを足せます。空のままで大丈夫" : "よければメモや数量を足せます。どちらも空のままで大丈夫"}</p>
             <label>
               メモ1行（作品名・場所・具体）
               <input value={enrichNote} onChange={(event) => setEnrichNote(event.target.value)} placeholder="例：国宝、〇〇温泉" />
             </label>
-            <label>
-              数量（未入力なら1）
-              <input type="number" min={1} inputMode="numeric" value={enrichCount} onChange={(event) => setEnrichCount(event.target.value)} placeholder="例：4" />
-            </label>
+            {/* 単発在庫は1件1タイトル前提なので数量は出さない（確定仕様） */}
+            {!enrichTarget.consumedStockEntry && (
+              <label>
+                数量（未入力なら1）
+                <input type="number" min={1} inputMode="numeric" value={enrichCount} onChange={(event) => setEnrichCount(event.target.value)} placeholder="例：4" />
+              </label>
+            )}
             <div className="button-row dialog-actions">
               <button type="button" className="primary-button" onClick={saveEnrichment}>とじる</button>
               <button type="button" className="subtle-button" onClick={undoEnrichTarget}>記録を取り消す</button>
@@ -1290,6 +1457,7 @@ export default function App() {
             <p>
               {datePickTarget.item.title}
               {datePickTarget.slotDate ? `（${formatDateWithWeekday(datePickTarget.slotDate)}ぶん）` : ""}
+              {datePickTarget.stockEntry?.label ? `（${datePickTarget.stockEntry.label}）` : ""}
             </p>
             <label>
               やった日
@@ -1307,7 +1475,7 @@ export default function App() {
         <div className="dialog-backdrop">
           <div className="dialog">
             <h3>項目を削除しますか？</h3>
-            <p>これまでの記録（完了ログ・集計）はタイトルの控えで残ります。在庫・前回の表示からは消えます。</p>
+            <p>これまでの記録（完了ログ・集計）はタイトルの控えで残ります。在庫・前回の表示からは消え、単発在庫に積んだまま消化していないものも一緒に消えます。</p>
             <div className="button-row dialog-actions">
               <button type="button" className="danger-button" onClick={() => deleteItem(deleteTargetId)}>削除する</button>
               <button type="button" onClick={() => setDeleteTargetId(null)}>やめる</button>

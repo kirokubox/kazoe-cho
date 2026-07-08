@@ -35,6 +35,8 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .inventory-date-list { display: grid; gap: 0.45rem; }
 .inventory-date-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0.45rem 0.6rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; color: #4c6578; }
 .enjoy-button { min-height: 40px; padding: 0.45rem 0.85rem; border-color: #b9d9ec; background: #e6f4fc; color: #2d6383; font-weight: 750; }
+.stock-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; }
+.stock-add-row button { flex: 0 0 auto; min-height: 44px; padding: 0.5rem 1rem; }
 
 .group-title { margin: 0 0 0.6rem; font-size: 1rem; color: #33566f; }
 .last-list { display: grid; gap: 0.5rem; }

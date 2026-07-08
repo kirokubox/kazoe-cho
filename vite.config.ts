@@ -25,5 +25,7 @@ function stampServiceWorkerVersion(): Plugin {
 
 export default defineConfig({
   base: "/kazoe-cho/",
+  // devサーバーのポート。PORT指定があれば従う（複数セッションでのポート衝突回避。本番ビルドには無関係）
+  server: { port: Number(process.env.PORT) || 5173 },
   plugins: [react(), stampServiceWorkerVersion()],
 });
