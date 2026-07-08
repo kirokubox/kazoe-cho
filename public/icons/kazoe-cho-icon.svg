@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b7d9f0"/>
+      <stop offset="1" stop-color="#ecf6fc"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="url(#sky)"/>
+  <g fill="#f6d878">
+    <path transform="translate(150 130) scale(1.15)" d="M0,-16 C2.5,-4.5 4.5,-2.5 16,0 C4.5,2.5 2.5,4.5 0,16 C-2.5,4.5 -4.5,2.5 -16,0 C-4.5,-2.5 -2.5,-4.5 0,-16Z"/>
+    <path transform="translate(312 92) scale(0.85)" d="M0,-16 C2.5,-4.5 4.5,-2.5 16,0 C4.5,2.5 2.5,4.5 0,16 C-2.5,4.5 -4.5,2.5 -16,0 C-4.5,-2.5 -2.5,-4.5 0,-16Z"/>
+    <path transform="translate(398 178) scale(1.0)" d="M0,-16 C2.5,-4.5 4.5,-2.5 16,0 C4.5,2.5 2.5,4.5 0,16 C-2.5,4.5 -4.5,2.5 -16,0 C-4.5,-2.5 -2.5,-4.5 0,-16Z"/>
+    <path transform="translate(243 196) scale(0.6)" fill="#ffffff" d="M0,-16 C2.5,-4.5 4.5,-2.5 16,0 C4.5,2.5 2.5,4.5 0,16 C-2.5,4.5 -4.5,2.5 -16,0 C-4.5,-2.5 -2.5,-4.5 0,-16Z"/>
+  </g>
+  <g>
+    <ellipse cx="256" cy="408" rx="158" ry="16" fill="#9fc2da" opacity="0.45"/>
+    <path d="M256,282 C214,262 158,258 112,270 L112,392 C158,380 214,384 256,404 Z" fill="#ffffff" stroke="#4a7fa5" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M256,282 C298,262 354,258 400,270 L400,392 C354,380 298,384 256,404 Z" fill="#fdfefe" stroke="#4a7fa5" stroke-width="10" stroke-linejoin="round"/>
+    <line x1="256" y1="284" x2="256" y2="402" stroke="#4a7fa5" stroke-width="8"/>
+    <g fill="none" stroke="#c6dcea" stroke-width="7" stroke-linecap="round">
+      <path d="M140,296 C172,290 204,292 232,302"/>
+      <path d="M140,324 C172,318 204,320 232,330"/>
+      <path d="M140,352 C172,346 204,348 232,358"/>
+      <path d="M280,302 C308,292 340,290 372,296"/>
+      <path d="M280,330 C308,320 340,318 372,324"/>
+      <path d="M280,358 C308,348 340,346 372,352"/>
+    </g>
+  </g>
+</svg>

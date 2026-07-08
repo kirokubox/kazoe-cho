@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "sample-item-1",
+      "title": "週刊マンガ誌",
+      "category": "楽しみ",
+      "kind": "楽しみ",
+      "repeatType": "weekly",
+      "weekday": 1,
+      "monthDay": null,
+      "isActive": true,
+      "inventoryStartDate": "2026-06-01",
+      "memo": "毎週月曜発売",
+      "createdAt": "2026-06-01T10:00:00",
+      "updatedAt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": "sample-item-2",
+      "title": "サウナ",
+      "category": "生活",
+      "kind": "習慣",
+      "repeatType": "none",
+      "weekday": null,
+      "monthDay": null,
+      "isActive": true,
+      "memo": "",
+      "createdAt": "2026-06-01T10:00:00",
+      "updatedAt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": "sample-item-3",
+      "title": "note記事/開発垢",
+      "category": "発信",
+      "kind": "作業",
+      "repeatType": "none",
+      "weekday": null,
+      "monthDay": null,
+      "isActive": true,
+      "memo": "具体は完了メモへ",
+      "createdAt": "2026-06-01T10:00:00",
+      "updatedAt": "2026-06-01T10:00:00"
+    }
+  ],
+  "completions": [
+    {
+      "id": "sample-completion-1",
+      "itemId": "sample-item-1",
+      "targetDate": "2026-06-01",
+      "completedAt": "2026-06-03T21:30:00",
+      "titleSnapshot": "週刊マンガ誌",
+      "categorySnapshot": "楽しみ",
+      "kindSnapshot": "楽しみ",
+      "note": "",
+      "count": null
+    },
+    {
+      "id": "sample-completion-2",
+      "itemId": "sample-item-2",
+      "targetDate": "2026-06-28",
+      "completedAt": "2026-06-28T16:00:00",
+      "titleSnapshot": "サウナ",
+      "categorySnapshot": "生活",
+      "kindSnapshot": "習慣",
+      "note": "〇〇温泉",
+      "count": null
+    },
+    {
+      "id": "sample-completion-3",
+      "itemId": "sample-item-3",
+      "targetDate": "2026-07-02",
+      "completedAt": "2026-07-02T22:10:00",
+      "titleSnapshot": "note記事/開発垢",
+      "categorySnapshot": "発信",
+      "kindSnapshot": "作業",
+      "note": "記事下書き",
+      "count": 2
+    }
+  ],
+  "settings": {
+    "dayBoundaryTime": "05:00",
+    "weekStartDay": 1,
+    "categories": ["楽しみ", "生活", "仕事", "お金", "人・連絡", "趣味", "開発", "SNS", "発信", "振り返り", "その他"]
+  }
+}

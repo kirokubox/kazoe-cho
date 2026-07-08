@@ -1,0 +1,37 @@
+{
+  "name": "かぞえ帳",
+  "short_name": "かぞえ帳",
+  "description": "「いつから？いくつ？」に一瞬で答える行動台帳",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f8fc",
+  "theme_color": "#4a7fa5",
+  "icons": [
+    {
+      "src": "icons/kazoe-cho-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/kazoe-cho-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/kazoe-cho-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/kazoe-cho-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
