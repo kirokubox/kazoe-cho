@@ -38,8 +38,23 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .stock-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; }
 .stock-add-row button { flex: 0 0 auto; min-height: 44px; padding: 0.5rem 1rem; }
 
-/* 単発在庫の箱に出す「前回：7/8（国宝）」の1行 */
+/* グループカードの「前回：7/9（サンダー3）」1行。タップで取り消せるのでボタン */
 .single-latest { margin: 0; color: #5f7d93; font-size: 0.88rem; }
+.undo-latest { display: inline-flex; width: fit-content; min-height: 0; padding: 0.2rem 0.4rem; margin: -0.1rem 0; border: none; background: transparent; color: #5f7d93; font-size: 0.88rem; text-align: left; border-radius: 8px; }
+.undo-latest:hover { background: #eef5fa; border-color: transparent; }
+
+/* v3.1 グループカード：グループ内の各項目ブロックと、前回1行の下の区切り線 */
+.card-divider { height: 1px; background: #e3eef6; margin: 0.15rem 0; }
+.inv-item-block { display: grid; gap: 0.4rem; }
+.inv-item-title { margin: 0.2rem 0 0; font-weight: 750; font-size: 0.98rem; color: #33566f; }
+/* 単発在庫の積み行：取り下げる＋楽しんだの2ボタン */
+.single-entry-row .entry-actions { display: flex; gap: 0.35rem; align-items: center; }
+.withdraw-button { min-height: 40px; padding: 0.45rem 0.7rem; border-color: #e0cfc9; background: #fbf3f0; color: #8a5a4f; font-weight: 700; font-size: 0.86rem; }
+
+/* 取り消せる日付チップ（在庫タブの前回1行・前回タブの直近3回） */
+.undo-date-chip { display: inline; min-height: 0; padding: 0.1rem 0.3rem; border: none; background: transparent; color: inherit; font: inherit; border-radius: 6px; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+.undo-date-chip:hover { background: #eef5fa; border-color: transparent; }
+.undo-date-chip.subtle { color: #9db0bf; font-size: 0.8rem; }
 
 /* 在庫0の項目をまとめる「在庫なし N件」チップと、展開時の軽い1行表示 */
 .zero-stock-section { display: grid; gap: 0.55rem; }
@@ -136,6 +151,9 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .dialog p { margin: 0; line-height: 1.6; color: #4d6375; }
 .dialog-actions { margin-top: 0.2rem; }
 .append-import-dialog { width: min(560px, 100%); }
+/* 項目フォームのモーダル（v3.1で常設フォームから移行）。フォーム項目間の余白を確保 */
+.item-form-dialog { width: min(520px, 100%); gap: 0.75rem; }
+.item-form-dialog label { font-weight: 650; }
 .import-preview-list { display: grid; gap: 0.6rem; }
 .import-preview-item { display: grid; gap: 0.4rem; padding: 0.7rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; }
 .import-preview-item h3 { margin: 0; font-size: 0.98rem; }

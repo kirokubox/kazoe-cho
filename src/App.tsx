@@ -113,6 +113,11 @@ type DatePickTarget = {
   stockEntry?: StockEntry; // 単発在庫の消化なら対象エントリ
 };
 
+// 在庫タブのグループカード内の1項目分。繰り返し在庫は対象日リスト、単発在庫は積みリストを持つ
+type InventoryEntry =
+  | { type: "repeat"; item: Item; dates: string[] }
+  | { type: "single"; item: Item; entries: StockEntry[] };
+
 type StatRow = {
   title: string;
   count: number;
@@ -558,10 +563,11 @@ function recentCompletionsOf(completions: Completion[], itemId: string, limit: n
     .slice(0, limit);
 }
 
-function latestCompletionOf(completions: Completion[], itemId: string) {
+// 在庫タブのグループカードに出す「前回」1行用：グループ配下の全項目の完了ログから最新1件
+function latestCompletionAmong(completions: Completion[], itemIds: Set<string>) {
   let latest: Completion | null = null;
   for (const completion of completions) {
-    if (completion.itemId !== itemId) continue;
+    if (!itemIds.has(completion.itemId)) continue;
     if (!latest || completion.targetDate > latest.targetDate || (completion.targetDate === latest.targetDate && completion.completedAt > latest.completedAt)) {
       latest = completion;
     }
@@ -783,8 +789,13 @@ export default function App() {
   // 単発在庫：箱ごとの「積む」入力欄
   const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
 
-  // 在庫タブ：在庫0の項目をまとめた「在庫なし N件」チップの開閉
-  const [zeroStockOpen, setZeroStockOpen] = useState(false);
+  // 在庫タブ：グループカードごとの「在庫なし N件」の開閉（キー＝グループ名。null群は空文字）
+  const [openZeroGroups, setOpenZeroGroups] = useState<Set<string>>(new Set());
+
+  // 記録の取り消し（誤タップの救済）。在庫タブの前回1行・前回タブの直近3回から開く
+  const [undoTargetId, setUndoTargetId] = useState<string | null>(null);
+  // 積んだもの（StockEntry）の取り下げ（＝記録を作らず積みから消す）
+  const [withdrawTarget, setWithdrawTarget] = useState<{ entryId: string; label: string } | null>(null);
 
   // 前回タブ：折りたたんだグループ（キー＝`カテゴリ|グループ`）
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -825,42 +836,61 @@ export default function App() {
     [data.completions],
   );
 
-  const inventoryItems = useMemo(
-    () =>
-      data.items
-        .filter((item) => item.isActive && isInventoryItem(item) && !isSingleStockItem(item))
-        .map((item) => ({ item, dates: inventoryDates(item, completedKeys, todayLife) }))
-        .sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
-    [data.items, completedKeys, todayLife],
-  );
+  // 在庫タブ：グループ1つ＝カード1枚（v3.1）。繰り返し在庫と単発在庫を同じグループにまとめる。
+  // 在庫がある項目を上、在庫0の項目はグループカードの中の「在庫なし」に畳む（並べ替え機能は付けない）
+  const inventoryGroups = useMemo(() => {
+    const stockItems = data.items.filter((item) => item.isActive && isInventoryItem(item));
+    const byGroup = new Map<string, InventoryEntry[]>();
+    for (const item of stockItems) {
+      const entry: InventoryEntry = isSingleStockItem(item)
+        ? {
+            type: "single",
+            item,
+            entries: data.stockEntries.filter((stock) => stock.itemId === item.id).sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
+          }
+        : { type: "repeat", item, dates: inventoryDates(item, completedKeys, todayLife) };
+      const key = item.group ?? "";
+      const list = byGroup.get(key) ?? [];
+      list.push(entry);
+      byGroup.set(key, list);
+    }
+    const listIndex = (list: string[], value: string) => {
+      const index = list.indexOf(value);
+      return index === -1 ? list.length : index;
+    };
+    const hasStock = (entry: InventoryEntry) => (entry.type === "repeat" ? entry.dates.length > 0 : entry.entries.length > 0);
+    const groups = Array.from(byGroup.entries()).map(([key, entries]) => {
+      // v2踏襲：繰り返し在庫→単発在庫、各群内はタイトル順
+      entries.sort((a, b) => (a.type === b.type ? a.item.title.localeCompare(b.item.title, "ja") : a.type === "repeat" ? -1 : 1));
+      const stocked = entries.filter(hasStock);
+      const zero = entries.filter((entry) => !hasStock(entry));
+      const totalDates = entries.reduce((sum, entry) => sum + (entry.type === "repeat" ? entry.dates.length : 0), 0);
+      const totalItems = entries.reduce((sum, entry) => sum + (entry.type === "single" ? entry.entries.length : 0), 0);
+      const itemIds = new Set(entries.map((entry) => entry.item.id));
+      return {
+        key,
+        group: key === "" ? null : key,
+        stocked,
+        zero,
+        totalDates,
+        totalItems,
+        hasRepeat: entries.some((entry) => entry.type === "repeat"),
+        hasSingle: entries.some((entry) => entry.type === "single"),
+        latest: latestCompletionAmong(data.completions, itemIds),
+        hasAnyStock: stocked.length > 0,
+      };
+    });
+    // 在庫があるグループを上、空のグループを下。各区画内は設定のグループ順→名前順。（グループなし）は末尾
+    groups.sort((a, b) => {
+      if (a.hasAnyStock !== b.hasAnyStock) return a.hasAnyStock ? -1 : 1;
+      if ((a.group === null) !== (b.group === null)) return a.group === null ? 1 : -1;
+      if (a.group === null || b.group === null) return 0;
+      return listIndex(data.settings.groups, a.group) - listIndex(data.settings.groups, b.group) || a.group.localeCompare(b.group, "ja");
+    });
+    return groups;
+  }, [data.items, data.stockEntries, data.completions, completedKeys, todayLife, data.settings.groups]);
 
-  // 単発在庫の箱。積んだものは追加順（addedAt順）で表示する。箱にだけ前回消化を1行出す
-  const singleStockItems = useMemo(
-    () =>
-      data.items
-        .filter((item) => item.isActive && isSingleStockItem(item))
-        .map((item) => ({
-          item,
-          entries: data.stockEntries
-            .filter((entry) => entry.itemId === item.id)
-            .sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
-          latest: latestCompletionOf(data.completions, item.id),
-        }))
-        .sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
-    [data.items, data.stockEntries, data.completions],
-  );
-
-  // 在庫がある項目を上、在庫0の項目を下（仕様として固定。並べ替え機能は付けない）。
-  // 在庫あり群の中はv2の並び（繰り返し在庫→単発在庫）を維持する
-  const repeatWithStock = inventoryItems.filter((entry) => entry.dates.length > 0);
-  const repeatZero = inventoryItems.filter((entry) => entry.dates.length === 0);
-  const singleWithStock = singleStockItems.filter((entry) => entry.entries.length > 0);
-  const singleZero = singleStockItems.filter((entry) => entry.entries.length === 0);
-  const zeroStockCount = repeatZero.length + singleZero.length;
-
-  const inventoryTotal =
-    inventoryItems.reduce((sum, entry) => sum + entry.dates.length, 0) +
-    singleStockItems.reduce((sum, entry) => sum + entry.entries.length, 0);
+  const inventoryTotal = inventoryGroups.reduce((sum, group) => sum + group.totalDates + group.totalItems, 0);
 
   const lastItems = useMemo(
     () =>
@@ -996,6 +1026,46 @@ export default function App() {
     }));
     setEnrichTarget(null);
     setMessage({ type: "success", text: "記録を取り消しました" });
+  }
+
+  // 記録の取り消し（誤タップの救済）。画面に出ている記録だけが対象。
+  // 繰り返し在庫→対象日が在庫に戻る（ログを消せば自動で戻る）。単発在庫→積みに戻す。前回日型→前回が縮む
+  function undoCompletion(completionId: string) {
+    setData((current) => {
+      const completion = current.completions.find((entry) => entry.id === completionId);
+      if (!completion) return current;
+      const item = current.items.find((entry) => entry.id === completion.itemId);
+      const completions = current.completions.filter((entry) => entry.id !== completionId);
+      let stockEntries = current.stockEntries;
+      if (item && isSingleStockItem(item)) {
+        // 消化した積みを戻す（元エントリのid/addedAtは失われるので、消化時刻を積み時刻として復元）
+        const label = completion.titleSnapshot === item.title ? "" : completion.titleSnapshot;
+        stockEntries = [...current.stockEntries, { id: genId(), itemId: item.id, label, addedAt: completion.completedAt }];
+      }
+      return { ...current, completions, stockEntries };
+    });
+    setUndoTargetId(null);
+    setMessage({ type: "success", text: "記録を取り消しました" });
+  }
+
+  // 積んだもの（StockEntry）の取り下げ。完了ログは作らず、積みから消えるだけ（「楽しんだ」とは別操作）
+  function withdrawEntry(entryId: string) {
+    setData((current) => ({ ...current, stockEntries: current.stockEntries.filter((entry) => entry.id !== entryId) }));
+    setWithdrawTarget(null);
+    setMessage({ type: "success", text: "積みから取り下げました" });
+  }
+
+  // 在庫タブ：グループカードごとの「在庫なし」開閉
+  function toggleZeroGroup(key: string) {
+    setOpenZeroGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
   }
 
   function openDatePick(item: Item, slotDate: string | null, stockEntry?: StockEntry) {
@@ -1134,19 +1204,15 @@ export default function App() {
     setMessage({ type: "success", text: `グループ「${name}」を追加しました` });
   }
 
-  // グループ削除：配下の項目（と未消化の積み）も一緒に消える。完了ログはgroupSnapshot付きで残る
+  // グループ削除：項目が1件でも入っているグループは削除しない（UIで無効化済み）。空グループを選択肢から外すだけ
   function deleteGroup(name: string) {
-    setData((current) => {
-      const removedItemIds = new Set(current.items.filter((item) => item.group === name).map((item) => item.id));
-      return {
-        ...current,
-        settings: { ...current.settings, groups: current.settings.groups.filter((group) => group !== name) },
-        items: current.items.filter((item) => item.group !== name),
-        stockEntries: current.stockEntries.filter((entry) => !removedItemIds.has(entry.itemId)),
-      };
-    });
+    if (data.items.some((item) => item.group === name)) return;
+    setData((current) => ({
+      ...current,
+      settings: { ...current.settings, groups: current.settings.groups.filter((group) => group !== name) },
+    }));
     setDeleteGroupTarget(null);
-    setMessage({ type: "success", text: `グループ「${name}」を削除しました（記録は残ります）` });
+    setMessage({ type: "success", text: `グループ「${name}」を削除しました` });
   }
 
   function dismissBackupNotice() {
@@ -1358,109 +1424,124 @@ export default function App() {
                 {inventoryTotal > 0 ? `いま ${inventoryTotal} 回ぶん たまっています。どれ楽しむ？` : "在庫はぜんぶ楽しみ済み。次が積まれるのを待つだけ"}
               </p>
             </section>
-            {inventoryItems.length === 0 && singleStockItems.length === 0 && (
+            {inventoryGroups.length === 0 && (
               <section className="section">
                 <p className="empty-text">在庫型の項目がまだありません。設定タブで「在庫にする」項目（毎週・毎月・単発在庫）をつくると、ここに在庫が積まれていきます。</p>
               </section>
             )}
-            {/* 在庫がある項目だけをフルカードで上に。繰り返し在庫→単発在庫の並びはv2踏襲（確定仕様） */}
-            {repeatWithStock.map(({ item, dates }) => (
-              <section key={item.id} className="section inventory-card">
-                <div className="inventory-card-head">
-                  <h3>{item.title}</h3>
-                  <span className="count-chip">{`${dates.length}回ぶん`}</span>
-                </div>
-                {item.memo && <p className="item-memo">{item.memo}</p>}
-                <div className="inventory-date-list">
-                  {dates.map((date) => (
-                    <div key={date} className="inventory-date-row">
-                      <span>{formatDateWithWeekday(date)}ぶん</span>
-                      <RecordButton
-                        label="楽しんだ"
-                        className="enjoy-button"
-                        onTap={() => recordCompletion(item, date, null)}
-                        onLongPress={() => openDatePick(item, date)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ))}
-            {singleWithStock.map(({ item, entries, latest }) => (
-              <section key={item.id} className="section inventory-card">
-                <div className="inventory-card-head">
-                  <h3>{item.title}</h3>
-                  <span className="count-chip">{`${entries.length}件`}</span>
-                </div>
-                {item.memo && <p className="item-memo">{item.memo}</p>}
-                {/* 単発在庫の箱にだけ前回消化を1行出す（繰り返し在庫には出さない：対象日リストの読みやすさ優先） */}
-                {latest && (
-                  <p className="single-latest">
-                    前回：{formatShortDate(doneDateOf(latest, boundary))}
-                    {latest.titleSnapshot && latest.titleSnapshot !== item.title ? `（${latest.titleSnapshot}）` : ""}
-                  </p>
-                )}
-                <div className="inventory-date-list">
-                  {entries.map((entry) => (
-                    <div key={entry.id} className="inventory-date-row">
-                      <span>{entry.label || "（名前なし）"}</span>
-                      <RecordButton
-                        label="楽しんだ"
-                        className="enjoy-button"
-                        onTap={() => consumeStockEntry(item, entry, null)}
-                        onLongPress={() => openDatePick(item, null, entry)}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="stock-add-row">
-                  <input
-                    value={stockDrafts[item.id] ?? ""}
-                    onChange={(event) => setStockDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                    placeholder="例：国宝（積むものの名前）"
-                  />
-                  <button type="button" className="primary-button" onClick={() => addStockEntry(item)}>積む</button>
-                </div>
-              </section>
-            ))}
-            {/* 在庫0の項目は1行チップに畳む。タップで展開しても1件1行の軽い表示（フルカードは使わない） */}
-            {zeroStockCount > 0 && (
-              <section className="section zero-stock-section">
-                <button type="button" className="zero-stock-chip" onClick={() => setZeroStockOpen((open) => !open)}>
-                  <span>在庫なし {zeroStockCount}件</span>
-                  <span className="chip-caret">{zeroStockOpen ? "たたむ ▲" : "ひらく ▼"}</span>
-                </button>
-                {zeroStockOpen && (
-                  <div className="zero-stock-list">
-                    {repeatZero.map(({ item }) => (
-                      <div key={item.id} className="zero-stock-row">
-                        <span className="zero-stock-title">{item.title}</span>
-                        <span className="zero-stock-note">ぜんぶ楽しみ済み 🎉</span>
-                      </div>
-                    ))}
-                    {singleZero.map(({ item, latest }) => (
-                      <div key={item.id} className="zero-stock-row">
-                        <span className="zero-stock-title">{item.title}</span>
-                        {latest && (
-                          <span className="zero-stock-note">
-                            前回：{formatShortDate(doneDateOf(latest, boundary))}
-                            {latest.titleSnapshot && latest.titleSnapshot !== item.title ? `（${latest.titleSnapshot}）` : ""}
-                          </span>
-                        )}
-                        <div className="zero-stock-add">
-                          <input
-                            value={stockDrafts[item.id] ?? ""}
-                            onChange={(event) => setStockDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                            placeholder="積むものの名前"
-                          />
-                          <button type="button" onClick={() => addStockEntry(item)}>積む</button>
-                        </div>
-                      </div>
-                    ))}
+            {/* グループ1つ＝カード1枚（v3.1）。在庫がある項目を上、在庫0はカード内の「在庫なし」に畳む */}
+            {inventoryGroups.map((group) => {
+              // 在庫がある分だけ数える。0の側は「在庫なし」の畳みが伝えるのでチップに出さない
+              const countParts: string[] = [];
+              if (group.totalDates > 0) countParts.push(`${group.totalDates}回ぶん`);
+              if (group.totalItems > 0) countParts.push(`${group.totalItems}件`);
+              const groupLabel = group.group ?? "（グループなし）";
+              const zeroOpen = openZeroGroups.has(group.key);
+              return (
+                <section key={group.key} className="section inventory-card">
+                  <div className="inventory-card-head">
+                    <h3>{groupLabel}</h3>
+                    {countParts.length > 0 && <span className="count-chip">{countParts.join("・")}</span>}
                   </div>
-                )}
-              </section>
-            )}
+                  {/* グループ配下の最新1件。タップで取り消せる（誤タップの救済） */}
+                  {group.latest && (
+                    <button type="button" className="single-latest undo-latest" onClick={() => setUndoTargetId(group.latest!.id)}>
+                      前回：{formatShortDate(doneDateOf(group.latest, boundary))}（{group.latest.titleSnapshot}）
+                    </button>
+                  )}
+                  {group.stocked.length > 0 && <div className="card-divider" />}
+                  {group.stocked.map((entry) => {
+                    const showSub = entry.item.title !== (group.group ?? "");
+                    return (
+                      <div key={entry.item.id} className="inv-item-block">
+                        {showSub && <p className="inv-item-title">{entry.item.title}</p>}
+                        {entry.type === "repeat" ? (
+                          <div className="inventory-date-list">
+                            {entry.dates.map((date) => (
+                              <div key={date} className="inventory-date-row">
+                                <span>{formatDateWithWeekday(date)}ぶん</span>
+                                <RecordButton
+                                  label="楽しんだ"
+                                  className="enjoy-button"
+                                  onTap={() => recordCompletion(entry.item, date, null)}
+                                  onLongPress={() => openDatePick(entry.item, date)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="inventory-date-list">
+                              {entry.entries.map((stock) => (
+                                <div key={stock.id} className="inventory-date-row single-entry-row">
+                                  <span>{stock.label || "（名前なし）"}</span>
+                                  <div className="entry-actions">
+                                    <button
+                                      type="button"
+                                      className="withdraw-button"
+                                      onClick={() => setWithdrawTarget({ entryId: stock.id, label: stock.label || "（名前なし）" })}
+                                    >
+                                      取り下げる
+                                    </button>
+                                    <RecordButton
+                                      label="楽しんだ"
+                                      className="enjoy-button"
+                                      onTap={() => consumeStockEntry(entry.item, stock, null)}
+                                      onLongPress={() => openDatePick(entry.item, null, stock)}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="stock-add-row">
+                              <input
+                                value={stockDrafts[entry.item.id] ?? ""}
+                                onChange={(event) => setStockDrafts((current) => ({ ...current, [entry.item.id]: event.target.value }))}
+                                placeholder="例：国宝（積むものの名前）"
+                              />
+                              <button type="button" className="primary-button" onClick={() => addStockEntry(entry.item)}>積む</button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {/* 在庫0の項目はこのカードの中に畳む（展開時も1件1行の軽い表示） */}
+                  {group.zero.length > 0 && (
+                    <div className="zero-stock-section">
+                      <button type="button" className="zero-stock-chip" onClick={() => toggleZeroGroup(group.key)}>
+                        <span>在庫なし {group.zero.length}件</span>
+                        <span className="chip-caret">{zeroOpen ? "たたむ ▲" : "ひらく ▼"}</span>
+                      </button>
+                      {zeroOpen && (
+                        <div className="zero-stock-list">
+                          {group.zero.map((entry) =>
+                            entry.type === "repeat" ? (
+                              <div key={entry.item.id} className="zero-stock-row">
+                                <span className="zero-stock-title">{entry.item.title}</span>
+                                <span className="zero-stock-note">ぜんぶ楽しみ済み 🎉</span>
+                              </div>
+                            ) : (
+                              <div key={entry.item.id} className="zero-stock-row">
+                                <span className="zero-stock-title">{entry.item.title}</span>
+                                <div className="zero-stock-add">
+                                  <input
+                                    value={stockDrafts[entry.item.id] ?? ""}
+                                    onChange={(event) => setStockDrafts((current) => ({ ...current, [entry.item.id]: event.target.value }))}
+                                    placeholder="積むものの名前"
+                                  />
+                                  <button type="button" onClick={() => addStockEntry(entry.item)}>積む</button>
+                                </div>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
           </>
         )}
 
@@ -1503,15 +1584,25 @@ export default function App() {
                                     <span className="last-meta">
                                       {latest && latestDoneDate ? (
                                         <>
-                                          {`前回：${formatShortDate(latestDoneDate)}${latest.note ? `（${latest.note}）` : ""}・${diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}`}
-                                          {/* 2回前・3回前は補助情報。主役は前回日と経過日数（確定仕様） */}
+                                          前回：
+                                          {/* 直近3回の各日付はタップで取り消せる（画面に出ている記録だけが対象・誤タップの救済） */}
+                                          <button type="button" className="undo-date-chip" onClick={() => setUndoTargetId(latest.id)}>
+                                            {formatShortDate(latestDoneDate)}
+                                            {latest.note ? `（${latest.note}）` : ""}・
+                                            {diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}
+                                          </button>
+                                          {/* 2回前・3回前は補助情報として淡く小さく。主役は前回日と経過日数（確定仕様） */}
                                           {recent.length > 1 && (
                                             <span className="last-history">
                                               {" ／ "}
-                                              {recent
-                                                .slice(1)
-                                                .map((completion) => formatShortDate(doneDateOf(completion, boundary)))
-                                                .join("・")}
+                                              {recent.slice(1).map((completion, index) => (
+                                                <Fragment key={completion.id}>
+                                                  {index > 0 && "・"}
+                                                  <button type="button" className="undo-date-chip subtle" onClick={() => setUndoTargetId(completion.id)}>
+                                                    {formatShortDate(doneDateOf(completion, boundary))}
+                                                  </button>
+                                                </Fragment>
+                                              ))}
                                             </span>
                                           )}
                                         </>
@@ -1602,113 +1693,9 @@ export default function App() {
           <>
             <section className="section">
               <h2>項目</h2>
-              {!draft && (
-                <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
-                  ＋ 項目をつくる
-                </button>
-              )}
-              {draft && (
-                <div className="item-form">
-                  <h3>{editingItemId ? "項目を編集" : "新しい項目"}</h3>
-                  <label>
-                    タイトル（必須）
-                    <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例：週刊少年ジャンプ、サウナ、記事執筆" />
-                  </label>
-                  <div className="form-grid-2">
-                    <label>
-                      カテゴリ
-                      <select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>
-                        {data.settings.categories.map((category) => (
-                          <option key={category} value={category}>{category}</option>
-                        ))}
-                        <option value={NEW_CATEGORY_VALUE}>＋新しいカテゴリ</option>
-                      </select>
-                    </label>
-                    <label>
-                      グループ（任意）
-                      <select value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })}>
-                        <option value={NO_GROUP_VALUE}>（なし）</option>
-                        {data.settings.groups.map((group) => (
-                          <option key={group} value={group}>{group}</option>
-                        ))}
-                        <option value={NEW_GROUP_VALUE}>＋新しいグループ</option>
-                      </select>
-                    </label>
-                  </div>
-                  {draft.category === NEW_CATEGORY_VALUE && (
-                    <label>
-                      新しいカテゴリ名
-                      <input value={draft.newCategory} onChange={(event) => setDraft({ ...draft, newCategory: event.target.value })} />
-                    </label>
-                  )}
-                  {draft.group === NEW_GROUP_VALUE && (
-                    <label>
-                      新しいグループ名
-                      <input value={draft.newGroup} onChange={(event) => setDraft({ ...draft, newGroup: event.target.value })} placeholder="例：アニメ、開発垢、家事" />
-                    </label>
-                  )}
-                  <div className="form-grid-2">
-                    <label>
-                      在庫にする
-                      <select
-                        value={draft.isStock ? "yes" : "no"}
-                        onChange={(event) => setDraft({ ...draft, isStock: event.target.value === "yes" })}
-                      >
-                        <option value="no">在庫にしない</option>
-                        <option value="yes">在庫にする</option>
-                      </select>
-                      <span className="field-help">オンにすると、やっていない分が在庫としてたまります</span>
-                    </label>
-                    {draft.isStock && (
-                      <label>
-                        繰り返し
-                        <select value={draft.repeatType} onChange={(event) => setDraft({ ...draft, repeatType: event.target.value as RepeatType })}>
-                          <option value="weekly">毎週</option>
-                          <option value="monthly">毎月</option>
-                          <option value="single">単発在庫（手で積む）</option>
-                        </select>
-                      </label>
-                    )}
-                  </div>
-                  {/* 在庫にしない項目には繰り返し・曜日・起点日を出さない（死んだUIを置かない） */}
-                  {draft.isStock && (draft.repeatType === "weekly" || draft.repeatType === "monthly") && (
-                    <div className="form-grid-2">
-                      {draft.repeatType === "weekly" ? (
-                        <label>
-                          曜日
-                          <select value={draft.weekday} onChange={(event) => setDraft({ ...draft, weekday: event.target.value })}>
-                            {WEEKDAY_LABELS.map((label, index) => (
-                              <option key={label} value={index}>{label}曜日</option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : (
-                        <label>
-                          日にち
-                          <input type="number" min={1} max={31} value={draft.monthDay} onChange={(event) => setDraft({ ...draft, monthDay: event.target.value })} />
-                        </label>
-                      )}
-                      <label>
-                        この日から数え始める（任意）
-                        <input type="date" value={draft.inventoryStartDate} onChange={(event) => setDraft({ ...draft, inventoryStartDate: event.target.value })} />
-                        <span className="field-help">この日以降の対象日だけを在庫として数えます。未入力なら作成日から</span>
-                      </label>
-                    </div>
-                  )}
-                  <label>
-                    メモ（任意・1行）
-                    <input value={draft.memo} onChange={(event) => setDraft({ ...draft, memo: event.target.value })} />
-                  </label>
-                  <label className="check-label">
-                    <input type="checkbox" checked={draft.isActive} onChange={(event) => setDraft({ ...draft, isActive: event.target.checked })} />
-                    有効にする
-                  </label>
-                  <div className="button-row">
-                    <button type="button" className="primary-button" onClick={saveDraft}>保存する</button>
-                    <button type="button" onClick={() => { setDraft(null); setEditingItemId(null); }}>やめる</button>
-                  </div>
-                </div>
-              )}
+              <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
+                ＋ 項目をつくる
+              </button>
               <div className="item-list">
                 {data.items.map((item) => {
                   const repeatLabel =
@@ -1741,7 +1728,7 @@ export default function App() {
 
             <section className="section">
               <h2>グループ</h2>
-              <p className="small-note">カテゴリと項目の間の中分類（アニメ、開発垢、家事…）。項目が0件のグループは在庫・前回タブに出ませんが、選択肢としてはここに残ります</p>
+              <p className="small-note">カテゴリと項目の間の中分類（アニメ、開発垢、家事…）。項目が0件のグループは在庫・前回タブに出ませんが、選択肢としてはここに残ります。項目が入っているグループは削除できません（先に項目を移すか削除してください）</p>
               <div className="group-add-row">
                 <input
                   value={newGroupName}
@@ -1752,15 +1739,15 @@ export default function App() {
               </div>
               <div className="item-list">
                 {data.settings.groups.map((group) => {
-                  const memberCount = data.items.filter((item) => item.group === group).length;
+                  const hasMembers = data.items.some((item) => item.group === group);
                   return (
                     <div key={group} className="item-row">
                       <div className="item-row-info">
                         <span className="item-row-title">{group}</span>
-                        <span className="item-row-meta">{memberCount > 0 ? `項目 ${memberCount}件` : "項目なし（受け皿）"}</span>
+                        {hasMembers && <span className="item-row-meta">項目が入っています</span>}
                       </div>
                       <div className="item-row-actions">
-                        <button type="button" className="subtle-button" onClick={() => setDeleteGroupTarget(group)}>削除</button>
+                        <button type="button" className="subtle-button" disabled={hasMembers} onClick={() => setDeleteGroupTarget(group)}>削除</button>
                       </div>
                     </div>
                   );
@@ -1838,6 +1825,108 @@ export default function App() {
         ))}
       </nav>
 
+      {/* 項目の新規・編集モーダル（v3.1で常設フォームから移行。閉じても設定リストのスクロール位置が保たれる） */}
+      {draft && (
+        <div className="dialog-backdrop">
+          <div className="dialog item-form-dialog">
+            <h3>{editingItemId ? "項目を編集" : "新しい項目"}</h3>
+            <label>
+              タイトル（必須）
+              <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例：週刊少年ジャンプ、サウナ、記事執筆" />
+            </label>
+            <div className="form-grid-2">
+              <label>
+                カテゴリ
+                <select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>
+                  {data.settings.categories.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                  <option value={NEW_CATEGORY_VALUE}>＋新しいカテゴリ</option>
+                </select>
+              </label>
+              <label>
+                グループ（任意）
+                <select value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })}>
+                  <option value={NO_GROUP_VALUE}>（なし）</option>
+                  {data.settings.groups.map((group) => (
+                    <option key={group} value={group}>{group}</option>
+                  ))}
+                  <option value={NEW_GROUP_VALUE}>＋新しいグループ</option>
+                </select>
+              </label>
+            </div>
+            {draft.category === NEW_CATEGORY_VALUE && (
+              <label>
+                新しいカテゴリ名
+                <input value={draft.newCategory} onChange={(event) => setDraft({ ...draft, newCategory: event.target.value })} />
+              </label>
+            )}
+            {draft.group === NEW_GROUP_VALUE && (
+              <label>
+                新しいグループ名
+                <input value={draft.newGroup} onChange={(event) => setDraft({ ...draft, newGroup: event.target.value })} placeholder="例：アニメ、開発垢、家事" />
+              </label>
+            )}
+            <div className="form-grid-2">
+              <label>
+                在庫にする
+                <select
+                  value={draft.isStock ? "yes" : "no"}
+                  onChange={(event) => setDraft({ ...draft, isStock: event.target.value === "yes" })}
+                >
+                  <option value="no">在庫にしない</option>
+                  <option value="yes">在庫にする</option>
+                </select>
+                <span className="field-help">オンにすると、やっていない分が在庫としてたまります</span>
+              </label>
+              {draft.isStock && (
+                <label>
+                  繰り返し
+                  <select value={draft.repeatType} onChange={(event) => setDraft({ ...draft, repeatType: event.target.value as RepeatType })}>
+                    <option value="weekly">毎週</option>
+                    <option value="monthly">毎月</option>
+                    <option value="single">単発在庫（手で積む）</option>
+                  </select>
+                </label>
+              )}
+            </div>
+            {/* 在庫にしない項目には繰り返し・曜日・起点日を出さない（死んだUIを置かない） */}
+            {draft.isStock && (draft.repeatType === "weekly" || draft.repeatType === "monthly") && (
+              <div className="form-grid-2">
+                {draft.repeatType === "weekly" ? (
+                  <label>
+                    曜日
+                    <select value={draft.weekday} onChange={(event) => setDraft({ ...draft, weekday: event.target.value })}>
+                      {WEEKDAY_LABELS.map((label, index) => (
+                        <option key={label} value={index}>{label}曜日</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <label>
+                    日にち
+                    <input type="number" min={1} max={31} value={draft.monthDay} onChange={(event) => setDraft({ ...draft, monthDay: event.target.value })} />
+                  </label>
+                )}
+                <label>
+                  この日から数え始める（任意）
+                  <input type="date" value={draft.inventoryStartDate} onChange={(event) => setDraft({ ...draft, inventoryStartDate: event.target.value })} />
+                  <span className="field-help">この日以降の対象日だけを在庫として数えます。未入力なら作成日から</span>
+                </label>
+              </div>
+            )}
+            <label className="check-label">
+              <input type="checkbox" checked={draft.isActive} onChange={(event) => setDraft({ ...draft, isActive: event.target.checked })} />
+              有効にする
+            </label>
+            <div className="button-row dialog-actions">
+              <button type="button" className="primary-button" onClick={saveDraft}>保存する</button>
+              <button type="button" onClick={() => { setDraft(null); setEditingItemId(null); }}>やめる</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {enrichTarget && (
         <div className="dialog-backdrop">
           <div className="dialog">
@@ -1886,27 +1975,73 @@ export default function App() {
         </div>
       )}
 
-      {deleteTargetId && (
+      {/* 記録の取り消し（誤タップの救済）。編集機能ではないのでラベルは「取り消す」で統一 */}
+      {undoTargetId && (() => {
+        const completion = data.completions.find((entry) => entry.id === undoTargetId);
+        if (!completion) return null;
+        const item = data.items.find((entry) => entry.id === completion.itemId);
+        const backNote =
+          item && isSingleStockItem(item)
+            ? "取り消すと、積みに戻ります。"
+            : item && isInventoryItem(item)
+              ? "取り消すと、対象日が在庫に戻ります。"
+              : "取り消すと、前回の記録が消えます。";
+        return (
+          <div className="dialog-backdrop">
+            <div className="dialog">
+              <h3>この記録を取り消しますか？</h3>
+              <p>
+                {completion.titleSnapshot}（{formatShortDate(doneDateOf(completion, boundary))}）
+              </p>
+              <p className="small-note">{backNote}記録を整える機能ではなく、押し間違いを戻すためのものです。</p>
+              <div className="button-row dialog-actions">
+                <button type="button" className="danger-button" onClick={() => undoCompletion(undoTargetId)}>取り消す</button>
+                <button type="button" onClick={() => setUndoTargetId(null)}>やめる</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 積んだものの取り下げ（記録を作らずに積みから消す） */}
+      {withdrawTarget && (
         <div className="dialog-backdrop">
           <div className="dialog">
-            <h3>項目を削除しますか？</h3>
-            <p>これまでの記録（完了ログ・集計）はタイトルの控えで残ります。在庫・前回の表示からは消え、単発在庫に積んだまま消化していないものも一緒に消えます。</p>
+            <h3>積みから取り下げますか？</h3>
+            <p>「{withdrawTarget.label}」を積みから外します。</p>
+            <p className="small-note">「楽しんだ」とは違い、完了ログは作られません。読まずにやめたものを、記録を汚さずに消せます。</p>
             <div className="button-row dialog-actions">
-              <button type="button" className="danger-button" onClick={() => deleteItem(deleteTargetId)}>削除する</button>
-              <button type="button" onClick={() => setDeleteTargetId(null)}>やめる</button>
+              <button type="button" className="danger-button" onClick={() => withdrawEntry(withdrawTarget.entryId)}>取り下げる</button>
+              <button type="button" onClick={() => setWithdrawTarget(null)}>やめる</button>
             </div>
           </div>
         </div>
       )}
 
+      {deleteTargetId && (() => {
+        const item = data.items.find((entry) => entry.id === deleteTargetId);
+        const stockCount = data.stockEntries.filter((entry) => entry.itemId === deleteTargetId).length;
+        const logCount = data.completions.filter((entry) => entry.itemId === deleteTargetId).length;
+        return (
+          <div className="dialog-backdrop">
+            <div className="dialog">
+              <h3>「{item?.title ?? "この項目"}」を削除します</h3>
+              {stockCount > 0 && <p>積んだもの {stockCount}件 も一緒に消えます。</p>}
+              <p>完了ログ {logCount}件 は残ります（集計にも出ます）。</p>
+              <div className="button-row dialog-actions">
+                <button type="button" className="danger-button" onClick={() => deleteItem(deleteTargetId)}>削除する</button>
+                <button type="button" onClick={() => setDeleteTargetId(null)}>やめる</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {deleteGroupTarget && (
         <div className="dialog-backdrop">
           <div className="dialog">
             <h3>グループ「{deleteGroupTarget}」を削除しますか？</h3>
-            <p>
-              このグループの項目（{data.items.filter((item) => item.group === deleteGroupTarget).length}件）も一緒に消えます。単発在庫に積んだまま消化していないものも消えます。
-              これまでの記録（完了ログ・集計）はグループ名の控え付きで残ります。
-            </p>
+            <p>このグループには項目が入っていません。選択肢から取り除くだけで、これまでの記録（完了ログ・集計）には影響しません。</p>
             <div className="button-row dialog-actions">
               <button type="button" className="danger-button" onClick={() => deleteGroup(deleteGroupTarget)}>削除する</button>
               <button type="button" onClick={() => setDeleteGroupTarget(null)}>やめる</button>
