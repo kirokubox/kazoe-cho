@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // かぞえ帳：「いつから？いくつ？」に一瞬で答える行動台帳
@@ -6,8 +6,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // - 入れていいのは「やりたいこと」だけ。締切・義務・時間分数は持たない
 // ---------------------------------------------------------------------------
 
+// Kind はv2までの分類（4択）。v3で isStock に置き換えたが、既存ログの kindSnapshot 保全のため型だけ残す
 type Kind = "楽しみ" | "習慣" | "振り返り" | "作業";
-// single＝単発在庫（楽しみ専用）。自動生成せず、在庫タブで手で積む
+// single＝単発在庫（手で積む）。自動生成しない
 type RepeatType = "weekly" | "monthly" | "none" | "single";
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -15,7 +16,8 @@ type Item = {
   id: string;
   title: string;
   category: string;
-  kind: Kind;
+  group: string | null; // カテゴリと項目の間の中分類。null＝カテゴリ直下
+  isStock: boolean; // true＝在庫タブ（repeatType weekly/monthly/single）、false＝前回タブ（repeatType none 固定）
   repeatType: RepeatType;
   weekday: Weekday | null;
   monthDay: number | null;
@@ -41,7 +43,8 @@ type Completion = {
   completedAt: string;
   titleSnapshot: string;
   categorySnapshot: string;
-  kindSnapshot: Kind;
+  groupSnapshot: string | null; // v3追加。グループを削除してもログの帰属先が残る。v2以前のログはnull
+  kindSnapshot?: Kind; // v2までの凍結フィールド。既存ログ保全のため残すが、新規ログには書き込まない
   note: string;
   count: number | null;
 };
@@ -50,10 +53,11 @@ type Settings = {
   dayBoundaryTime: string;
   weekStartDay: Weekday;
   categories: string[];
+  groups: string[]; // v3追加。空グループも「受け皿」として選択肢に残すため設定に持つ
 };
 
 type AppData = {
-  version: 1;
+  version: 2; // v3改修でデータ形式を2に更新（1＝kind時代。読み込みは1も受理して移行する）
   items: Item[];
   completions: Completion[];
   stockEntries: StockEntry[];
@@ -66,7 +70,9 @@ type ItemDraft = {
   title: string;
   category: string;
   newCategory: string;
-  kind: Kind;
+  group: string; // NO_GROUP_VALUE＝なし、NEW_GROUP_VALUE＝新規追加
+  newGroup: string;
+  isStock: boolean;
   repeatType: RepeatType;
   weekday: string;
   monthDay: string;
@@ -87,6 +93,8 @@ type ImportPreview = {
   incomingItems: Item[];
   incomingCompletions: Completion[];
   incomingStockEntries: StockEntry[];
+  incomingCategories: string[]; // 設定由来の空カテゴリ（受け皿）も取り込む
+  incomingGroups: string[]; // 設定由来の空グループ（受け皿）も取り込む
   adoptDayBoundary: string | null;
   counts: ImportCount[];
 };
@@ -111,21 +119,40 @@ type StatRow = {
   quantity: number;
 };
 
+// グループ×項目の粒度。グループの合計行は出さない（重みの違う行動を足した数に意味がないため）
+type StatGroup = {
+  group: string | null; // null＝カテゴリ直下（groupSnapshotが空の旧ログ含む）
+  rows: StatRow[];
+};
+
 type StatCategory = {
   category: string;
-  rows: StatRow[];
+  groups: StatGroup[];
   count: number;
   quantity: number;
 };
 
 const STORAGE_KEY = "yuki-kazoe-cho-data";
 const ACTIVE_VIEW_KEY = "yuki-kazoe-cho-active-view";
+// v2→v3移行の直後に一度だけ「バックアップ推奨」の導線を出すためのフラグ
+const BACKUP_NOTICE_KEY = "yuki-kazoe-cho-v3-backup-notice";
 
 const KINDS: Kind[] = ["楽しみ", "習慣", "振り返り", "作業"];
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 const DAY_BOUNDARY_OPTIONS = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00"];
-const DEFAULT_CATEGORIES = ["楽しみ", "生活", "仕事", "お金", "人・連絡", "趣味", "開発", "SNS", "発信", "振り返り", "その他"];
+const DEFAULT_CATEGORIES = ["楽しみ", "おでかけ", "作業", "生活", "お金", "仕事", "その他"];
+// v2までの既定カテゴリをv3の既定へ寄せる移行マップ。表に無いカテゴリ（ユーザー追加分）は据え置く
+const CATEGORY_MIGRATION_MAP: Record<string, string> = {
+  趣味: "楽しみ",
+  SNS: "作業",
+  発信: "作業",
+  開発: "作業",
+  "人・連絡": "おでかけ",
+  振り返り: "その他",
+};
 const NEW_CATEGORY_VALUE = "__new__";
+const NEW_GROUP_VALUE = "__new__";
+const NO_GROUP_VALUE = "__none__";
 // 在庫の遡り上限（日）。壊れたデータでの無限ループ防止の安全弁で、通常運用では届かない
 const MAX_INVENTORY_LOOKBACK_DAYS = 1600;
 const LONG_PRESS_MS = 550;
@@ -134,10 +161,11 @@ const DEFAULT_SETTINGS: Settings = {
   dayBoundaryTime: "05:00",
   weekStartDay: 1,
   categories: DEFAULT_CATEGORIES,
+  groups: [],
 };
 
 const DEFAULT_DATA: AppData = {
-  version: 1,
+  version: 2,
   items: [],
   completions: [],
   stockEntries: [],
@@ -237,39 +265,95 @@ function isWeekdayValue(value: unknown): value is Weekday {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 6;
 }
 
-function isItem(value: unknown): value is Item {
-  if (typeof value !== "object" || value === null) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.id === "string" &&
-    typeof item.title === "string" &&
-    typeof item.category === "string" &&
-    isKind(item.kind) &&
-    (item.repeatType === "weekly" || item.repeatType === "monthly" || item.repeatType === "none" || item.repeatType === "single") &&
-    (item.weekday === null || isWeekdayValue(item.weekday)) &&
-    (item.monthDay === null || typeof item.monthDay === "number") &&
-    typeof item.isActive === "boolean" &&
-    (item.inventoryStartDate === undefined || /^\d{4}-\d{2}-\d{2}$/.test(String(item.inventoryStartDate))) &&
-    typeof item.memo === "string" &&
-    typeof item.createdAt === "string" &&
-    typeof item.updatedAt === "string"
-  );
+function isRepeatType(value: unknown): value is RepeatType {
+  return value === "weekly" || value === "monthly" || value === "none" || value === "single";
 }
 
-function isCompletion(value: unknown): value is Completion {
-  if (typeof value !== "object" || value === null) return false;
+// v1/v2（kindあり）・v3（isStockあり）のどちらの形状でも受け取り、v3のItemへ正規化する。
+// remapCategory はv2以前のデータにだけ適用する（v3でユーザーが同名カテゴリを作り直しても書き換えないため）。
+// 不変条件：isStock=false ⇔ repeatType="none"。冪等（v3のItemを通しても変わらない）
+function migrateItem(value: unknown, remapCategory: boolean): Item | null {
+  if (typeof value !== "object" || value === null) return null;
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.id !== "string" ||
+    typeof item.title !== "string" ||
+    typeof item.category !== "string" ||
+    !isRepeatType(item.repeatType) ||
+    typeof item.isActive !== "boolean" ||
+    typeof item.memo !== "string" ||
+    typeof item.createdAt !== "string" ||
+    typeof item.updatedAt !== "string"
+  ) {
+    return null;
+  }
+
+  let isStock: boolean;
+  if (typeof item.isStock === "boolean") {
+    isStock = item.isStock;
+  } else if (isKind(item.kind)) {
+    // v2までの在庫判定「楽しみ × 繰り返しあり」をそのまま写す
+    isStock = item.kind === "楽しみ" && item.repeatType !== "none";
+  } else {
+    return null;
+  }
+  if (item.repeatType === "none") isStock = false;
+
+  const repeatType: RepeatType = isStock ? item.repeatType : "none";
+  const inventoryStartDate =
+    isStock && typeof item.inventoryStartDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.inventoryStartDate)
+      ? item.inventoryStartDate
+      : undefined;
+  const category = remapCategory ? (CATEGORY_MIGRATION_MAP[item.category] ?? item.category) : item.category;
+  const group = typeof item.group === "string" && item.group.trim() !== "" ? item.group : null;
+
+  return {
+    id: item.id,
+    title: item.title,
+    category,
+    group,
+    isStock,
+    repeatType,
+    weekday: repeatType === "weekly" && isWeekdayValue(item.weekday) ? item.weekday : null,
+    monthDay: repeatType === "monthly" && typeof item.monthDay === "number" ? item.monthDay : null,
+    isActive: item.isActive,
+    inventoryStartDate,
+    memo: item.memo,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+// 完了ログの正規化。kindSnapshot・categorySnapshot・titleSnapshot は過去の事実なので書き換えない。
+// groupSnapshot はv2以前のログには無いので null 補完（垢別の内訳はv3以降のログからしか出ない：titleSnapshot方式の正しい挙動）
+function migrateCompletion(value: unknown): Completion | null {
+  if (typeof value !== "object" || value === null) return null;
   const completion = value as Record<string, unknown>;
-  return (
-    typeof completion.id === "string" &&
-    typeof completion.itemId === "string" &&
-    /^\d{4}-\d{2}-\d{2}$/.test(String(completion.targetDate)) &&
-    typeof completion.completedAt === "string" &&
-    typeof completion.titleSnapshot === "string" &&
-    typeof completion.categorySnapshot === "string" &&
-    isKind(completion.kindSnapshot) &&
-    typeof completion.note === "string" &&
-    (completion.count === null || typeof completion.count === "number")
-  );
+  if (
+    typeof completion.id !== "string" ||
+    typeof completion.itemId !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(String(completion.targetDate)) ||
+    typeof completion.completedAt !== "string" ||
+    typeof completion.titleSnapshot !== "string" ||
+    typeof completion.categorySnapshot !== "string" ||
+    !(completion.kindSnapshot === undefined || isKind(completion.kindSnapshot)) ||
+    typeof completion.note !== "string" ||
+    !(completion.count === null || typeof completion.count === "number")
+  ) {
+    return null;
+  }
+  return {
+    id: completion.id,
+    itemId: completion.itemId,
+    targetDate: String(completion.targetDate),
+    completedAt: completion.completedAt,
+    titleSnapshot: completion.titleSnapshot,
+    categorySnapshot: completion.categorySnapshot,
+    groupSnapshot: typeof completion.groupSnapshot === "string" && completion.groupSnapshot !== "" ? completion.groupSnapshot : null,
+    ...(isKind(completion.kindSnapshot) ? { kindSnapshot: completion.kindSnapshot } : {}),
+    note: completion.note,
+    count: completion.count as number | null,
+  };
 }
 
 function isStockEntry(value: unknown): value is StockEntry {
@@ -283,40 +367,75 @@ function isStockEntry(value: unknown): value is StockEntry {
   );
 }
 
-function normalizeSettings(raw: unknown): Settings {
+function stringList(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? (value as string[]) : null;
+}
+
+function normalizeSettings(raw: unknown, legacy: boolean): Settings {
   const settings = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const dayBoundaryTime = DAY_BOUNDARY_OPTIONS.includes(String(settings.dayBoundaryTime))
     ? String(settings.dayBoundaryTime)
     : DEFAULT_SETTINGS.dayBoundaryTime;
   const weekStartDay = isWeekdayValue(settings.weekStartDay) ? settings.weekStartDay : DEFAULT_SETTINGS.weekStartDay;
-  const categories = Array.isArray(settings.categories) && settings.categories.every((c) => typeof c === "string") && settings.categories.length > 0
-    ? (settings.categories as string[])
-    : DEFAULT_SETTINGS.categories;
-  return { dayBoundaryTime, weekStartDay, categories };
+  const rawCategories = stringList(settings.categories);
+  let categories = rawCategories && rawCategories.length > 0 ? rawCategories : DEFAULT_SETTINGS.categories;
+  if (legacy) {
+    // v2以前のカテゴリ一覧をv3の既定7種に差し替え、マップ対象外（ユーザー追加分）だけ後ろへ残す
+    categories = [
+      ...DEFAULT_CATEGORIES,
+      ...categories.filter((category) => !DEFAULT_CATEGORIES.includes(category) && !(category in CATEGORY_MIGRATION_MAP)),
+    ];
+  }
+  const groups = stringList(settings.groups) ?? [];
+  // 後段で項目由来のカテゴリ・グループを追加（push）するため、既定配列への参照を渡さずコピーする
+  return { dayBoundaryTime, weekStartDay, categories: [...categories], groups: [...groups] };
 }
 
+// v1/v2/v3のどの形式でも受け取り、v3形式に正規化する移行関数。
+// localStorage読み込みとJSONインポートの両方がここを通る（v1/v2バックアップJSONの追加インポートが今後も通る）。冪等
 function normalizeAppData(raw: unknown): AppData | null {
   if (typeof raw !== "object" || raw === null) return null;
   const data = raw as Record<string, unknown>;
-  if (!Array.isArray(data.items) || !data.items.every(isItem)) return null;
-  if (!Array.isArray(data.completions) || !data.completions.every(isCompletion)) return null;
+  // v2以前は version:1（または欠損）。カテゴリのリマップはそのデータにだけ適用する
+  const legacy = data.version !== 2;
+  if (!Array.isArray(data.items) || !Array.isArray(data.completions)) return null;
+  const items: Item[] = [];
+  for (const value of data.items) {
+    const item = migrateItem(value, legacy);
+    if (!item) return null;
+    items.push(item);
+  }
+  const completions: Completion[] = [];
+  for (const value of data.completions) {
+    const completion = migrateCompletion(value);
+    if (!completion) return null;
+    completions.push(completion);
+  }
   // stockEntries はv2追加。無い/不正なら空として扱い、v1データをそのまま通す
   const stockEntries = Array.isArray(data.stockEntries) && data.stockEntries.every(isStockEntry) ? data.stockEntries : [];
-  return {
-    version: 1,
-    items: data.items,
-    completions: data.completions,
-    stockEntries,
-    settings: normalizeSettings(data.settings),
-  };
+  const settings = normalizeSettings(data.settings, legacy);
+  // 項目が参照するカテゴリ・グループは、選択肢に必ず載せる（「箱がないから記録されない」を防ぐ）
+  for (const item of items) {
+    if (!settings.categories.includes(item.category)) settings.categories.push(item.category);
+    if (item.group && !settings.groups.includes(item.group)) settings.groups.push(item.group);
+  }
+  return { version: 2, items, completions, stockEntries, settings };
 }
 
 function loadData(): AppData {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_DATA;
-    const parsed = normalizeAppData(JSON.parse(raw));
-    return parsed ?? DEFAULT_DATA;
+    const parsedRaw = JSON.parse(raw) as Record<string, unknown> | null;
+    const parsed = normalizeAppData(parsedRaw);
+    if (!parsed) return DEFAULT_DATA;
+    if (typeof parsedRaw === "object" && parsedRaw !== null && parsedRaw.version !== 2) {
+      // v3移行の直前に、v2までの生データを丸ごと別キーへ退避する（破壊的変更への保険）
+      const backupKey = `yuki-kazoe-cho-data-backup-v2-${dateKeyFromDate(new Date()).replace(/-/g, "")}`;
+      if (!localStorage.getItem(backupKey)) localStorage.setItem(backupKey, raw);
+      localStorage.setItem(BACKUP_NOTICE_KEY, "pending");
+    }
+    return parsed;
   } catch {
     return DEFAULT_DATA;
   }
@@ -346,16 +465,22 @@ function convertOldBackup(raw: Record<string, unknown>): { items: Item[]; comple
     if (typeof value !== "object" || value === null) return null;
     const task = value as Record<string, unknown>;
     if (typeof task.id !== "string" || typeof task.title !== "string") return null;
+    // 旧kind「楽しみ」（繰り返しあり）だけが在庫型。それ以外（確認→習慣 含む）は前回日型として取り込む
+    const oldKind = convertOldKind(String(task.kind));
+    const isStock = oldKind === "楽しみ";
+    const repeatType: RepeatType = isStock ? (task.repeatType === "monthly" ? "monthly" : "weekly") : "none";
+    const oldCategory = typeof task.category === "string" ? task.category : "その他";
     items.push({
       id: task.id,
       title: task.title,
-      category: typeof task.category === "string" ? task.category : "その他",
-      kind: convertOldKind(String(task.kind)),
-      repeatType: task.repeatType === "monthly" ? "monthly" : "weekly",
-      weekday: isWeekdayValue(task.weekday) ? task.weekday : null,
-      monthDay: typeof task.monthDay === "number" ? task.monthDay : null,
+      category: CATEGORY_MIGRATION_MAP[oldCategory] ?? oldCategory,
+      group: null,
+      isStock,
+      repeatType,
+      weekday: repeatType === "weekly" && isWeekdayValue(task.weekday) ? task.weekday : null,
+      monthDay: repeatType === "monthly" && typeof task.monthDay === "number" ? task.monthDay : null,
       isActive: task.isActive !== false,
-      inventoryStartDate: typeof task.inventoryStartDate === "string" ? task.inventoryStartDate : undefined,
+      inventoryStartDate: isStock && typeof task.inventoryStartDate === "string" ? task.inventoryStartDate : undefined,
       memo: typeof task.memo === "string" ? task.memo : "",
       createdAt: typeof task.createdAt === "string" ? task.createdAt : nowLocalStamp(),
       updatedAt: typeof task.updatedAt === "string" ? task.updatedAt : nowLocalStamp(),
@@ -374,6 +499,8 @@ function convertOldBackup(raw: Record<string, unknown>): { items: Item[]; comple
       completedAt: typeof completion.completedAt === "string" ? completion.completedAt : nowLocalStamp(),
       titleSnapshot: typeof completion.titleSnapshot === "string" ? completion.titleSnapshot : "",
       categorySnapshot: typeof completion.categorySnapshot === "string" ? completion.categorySnapshot : "その他",
+      groupSnapshot: null,
+      // 過去ログの控えとして凍結フィールドに変換して残す（「確認」→「習慣」）
       kindSnapshot: convertOldKind(String(completion.kindSnapshot)),
       note: "",
       count: null,
@@ -387,14 +514,14 @@ function convertOldBackup(raw: Record<string, unknown>): { items: Item[]; comple
 
 // ----------------------------- 表示ロジック -----------------------------
 
-// 在庫型：楽しみ × 繰り返しあり or 単発在庫。それ以外（習慣・振り返り・作業・随時もの）は前回日型
+// 在庫型かどうかは「在庫にする」スイッチだけで決まる（v3でkindを廃止）
 function isInventoryItem(item: Item) {
-  return item.kind === "楽しみ" && item.repeatType !== "none";
+  return item.isStock;
 }
 
-// 単発在庫：楽しみ専用。対象日を自動生成せず、手で積む
+// 単発在庫：対象日を自動生成せず、手で積む
 function isSingleStockItem(item: Item) {
-  return item.kind === "楽しみ" && item.repeatType === "single";
+  return item.isStock && item.repeatType === "single";
 }
 
 function matchesRepeatRule(item: Item, date: Date) {
@@ -423,6 +550,14 @@ function inventoryDates(item: Item, completedKeys: Set<string>, todayLife: strin
   return dates;
 }
 
+// 前回タブの「直近3回」用。新しい順に返す（latestCompletionOfと同じ優先順位：対象日→記録時刻）
+function recentCompletionsOf(completions: Completion[], itemId: string, limit: number) {
+  return completions
+    .filter((completion) => completion.itemId === itemId)
+    .sort((a, b) => b.targetDate.localeCompare(a.targetDate) || b.completedAt.localeCompare(a.completedAt))
+    .slice(0, limit);
+}
+
 function latestCompletionOf(completions: Completion[], itemId: string) {
   let latest: Completion | null = null;
   for (const completion of completions) {
@@ -446,32 +581,50 @@ function quantityOf(completion: Completion) {
   return completion.count ?? 1;
 }
 
-function buildStatCategories(completions: Completion[], categoriesOrder: string[]): StatCategory[] {
-  const byCategory = new Map<string, Map<string, StatRow>>();
+// カテゴリ＞グループ＞項目の粒度で集計する。行キーは（グループ, タイトル）：
+// 開発垢の「記事執筆」と記録垢の「記事執筆」は別の行として数える。
+// グループの合計行は作らない（壁打ち12回と記事執筆3回を足した数に意味がなく、合計を出した瞬間に採点が始まるため）
+function buildStatCategories(completions: Completion[], categoriesOrder: string[], groupsOrder: string[]): StatCategory[] {
+  const byCategory = new Map<string, Map<string, Map<string, StatRow>>>();
   for (const completion of completions) {
     const category = completion.categorySnapshot || "その他";
-    const rows = byCategory.get(category) ?? new Map<string, StatRow>();
+    // groupSnapshotが空（v2以前のログ）はカテゴリ直下（キー""）に並べる
+    const groupKey = completion.groupSnapshot ?? "";
+    const groups = byCategory.get(category) ?? new Map<string, Map<string, StatRow>>();
+    const rows = groups.get(groupKey) ?? new Map<string, StatRow>();
     const row = rows.get(completion.titleSnapshot) ?? { title: completion.titleSnapshot, count: 0, quantity: 0 };
     row.count += 1;
     row.quantity += quantityOf(completion);
     rows.set(completion.titleSnapshot, row);
-    byCategory.set(category, rows);
+    groups.set(groupKey, rows);
+    byCategory.set(category, groups);
   }
-  const orderIndex = (category: string) => {
-    const index = categoriesOrder.indexOf(category);
-    return index === -1 ? categoriesOrder.length : index;
+  const listIndex = (list: string[], value: string) => {
+    const index = list.indexOf(value);
+    return index === -1 ? list.length : index;
   };
   return Array.from(byCategory.entries())
-    .map(([category, rows]) => {
-      const rowList = Array.from(rows.values()).sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, "ja"));
+    .map(([category, groups]) => {
+      const groupList: StatGroup[] = Array.from(groups.entries())
+        .map(([groupKey, rows]) => ({
+          group: groupKey === "" ? null : groupKey,
+          rows: Array.from(rows.values()).sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, "ja")),
+        }))
+        // カテゴリ直下（group=null）を先頭、続いて設定のグループ順→名前順
+        .sort((a, b) => {
+          if (a.group === null) return b.group === null ? 0 : -1;
+          if (b.group === null) return 1;
+          return listIndex(groupsOrder, a.group) - listIndex(groupsOrder, b.group) || a.group.localeCompare(b.group, "ja");
+        });
+      const allRows = groupList.flatMap((group) => group.rows);
       return {
         category,
-        rows: rowList,
-        count: rowList.reduce((sum, row) => sum + row.count, 0),
-        quantity: rowList.reduce((sum, row) => sum + row.quantity, 0),
+        groups: groupList,
+        count: allRows.reduce((sum, row) => sum + row.count, 0),
+        quantity: allRows.reduce((sum, row) => sum + row.quantity, 0),
       };
     })
-    .sort((a, b) => orderIndex(a.category) - orderIndex(b.category) || a.category.localeCompare(b.category, "ja"));
+    .sort((a, b) => listIndex(categoriesOrder, a.category) - listIndex(categoriesOrder, b.category) || a.category.localeCompare(b.category, "ja"));
 }
 
 // ----------------------------- エクスポート -----------------------------
@@ -503,7 +656,8 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
             ? "手で積む"
             : "随時";
     const active = item.isActive ? "" : "（停止中）";
-    lines.push(`- [${shape}] ${item.title}（${item.kind}／${item.category}／${repeat}）${active}`);
+    const placement = item.group ? `${item.category}＞${item.group}` : item.category;
+    lines.push(`- [${shape}] ${item.title}（${placement}／${repeat}）${active}`);
     if (isSingleStockItem(item)) {
       const entries = data.stockEntries
         .filter((entry) => entry.itemId === item.id)
@@ -516,10 +670,12 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
   lines.push("");
 
   const statTable = (completions: Completion[]) => {
-    const rows: string[] = ["| 項目 | 件数 | 数量 |", "| --- | ---: | ---: |"];
-    for (const category of buildStatCategories(completions, data.settings.categories)) {
-      for (const row of category.rows) {
-        rows.push(`| ${row.title} | ${row.count} | ${row.quantity} |`);
+    const rows: string[] = ["| グループ | 項目 | 件数 | 数量 |", "| --- | --- | ---: | ---: |"];
+    for (const category of buildStatCategories(completions, data.settings.categories, data.settings.groups)) {
+      for (const group of category.groups) {
+        for (const row of group.rows) {
+          rows.push(`| ${group.group ?? ""} | ${row.title} | ${row.count} | ${row.quantity} |`);
+        }
       }
     }
     return rows;
@@ -627,10 +783,23 @@ export default function App() {
   // 単発在庫：箱ごとの「積む」入力欄
   const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
 
+  // 在庫タブ：在庫0の項目をまとめた「在庫なし N件」チップの開閉
+  const [zeroStockOpen, setZeroStockOpen] = useState(false);
+
+  // 前回タブ：折りたたんだグループ（キー＝`カテゴリ|グループ`）
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  // v2→v3移行の直後に一度だけ出すバックアップ推奨バナー
+  const [backupNoticeVisible, setBackupNoticeVisible] = useState(() => localStorage.getItem(BACKUP_NOTICE_KEY) === "pending");
+
   // 設定タブ：項目フォーム
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ItemDraft | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  // 設定タブ：グループ管理
+  const [newGroupName, setNewGroupName] = useState("");
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState<string | null>(null);
 
   // インポート
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -665,7 +834,7 @@ export default function App() {
     [data.items, completedKeys, todayLife],
   );
 
-  // 単発在庫の箱。積んだものは追加順（addedAt順）で表示する
+  // 単発在庫の箱。積んだものは追加順（addedAt順）で表示する。箱にだけ前回消化を1行出す
   const singleStockItems = useMemo(
     () =>
       data.items
@@ -675,10 +844,19 @@ export default function App() {
           entries: data.stockEntries
             .filter((entry) => entry.itemId === item.id)
             .sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
+          latest: latestCompletionOf(data.completions, item.id),
         }))
         .sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
-    [data.items, data.stockEntries],
+    [data.items, data.stockEntries, data.completions],
   );
+
+  // 在庫がある項目を上、在庫0の項目を下（仕様として固定。並べ替え機能は付けない）。
+  // 在庫あり群の中はv2の並び（繰り返し在庫→単発在庫）を維持する
+  const repeatWithStock = inventoryItems.filter((entry) => entry.dates.length > 0);
+  const repeatZero = inventoryItems.filter((entry) => entry.dates.length === 0);
+  const singleWithStock = singleStockItems.filter((entry) => entry.entries.length > 0);
+  const singleZero = singleStockItems.filter((entry) => entry.entries.length === 0);
+  const zeroStockCount = repeatZero.length + singleZero.length;
 
   const inventoryTotal =
     inventoryItems.reduce((sum, entry) => sum + entry.dates.length, 0) +
@@ -688,28 +866,46 @@ export default function App() {
     () =>
       data.items
         .filter((item) => item.isActive && !isInventoryItem(item))
-        .map((item) => ({ item, latest: latestCompletionOf(data.completions, item.id) })),
+        .map((item) => ({ item, recent: recentCompletionsOf(data.completions, item.id, 3) })),
     [data.items, data.completions],
   );
 
-  const lastGroups = useMemo(() => {
-    const groups = new Map<string, typeof lastItems>();
+  // 前回タブ：カテゴリ＞グループ＞項目 の3階層。グループ未設定（null）の項目はカテゴリ直下に並ぶ。
+  // 空グループ・空カテゴリは項目由来で組み立てるため自然に表示されない
+  const lastCategories = useMemo(() => {
+    const byCategory = new Map<string, Map<string, typeof lastItems>>();
     for (const entry of lastItems) {
-      const list = groups.get(entry.item.category) ?? [];
+      const groups = byCategory.get(entry.item.category) ?? new Map<string, typeof lastItems>();
+      const groupKey = entry.item.group ?? "";
+      const list = groups.get(groupKey) ?? [];
       list.push(entry);
-      groups.set(entry.item.category, list);
+      groups.set(groupKey, list);
+      byCategory.set(entry.item.category, groups);
     }
-    const orderIndex = (category: string) => {
-      const index = data.settings.categories.indexOf(category);
-      return index === -1 ? data.settings.categories.length : index;
+    const listIndex = (list: string[], value: string) => {
+      const index = list.indexOf(value);
+      return index === -1 ? list.length : index;
     };
-    return Array.from(groups.entries())
-      .map(([category, entries]) => ({
+    return Array.from(byCategory.entries())
+      .map(([category, groups]) => ({
         category,
-        entries: entries.sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
+        groups: Array.from(groups.entries())
+          .map(([groupKey, entries]) => ({
+            group: groupKey === "" ? null : groupKey,
+            entries: entries.sort((a, b) => a.item.title.localeCompare(b.item.title, "ja")),
+          }))
+          .sort((a, b) => {
+            if (a.group === null) return b.group === null ? 0 : -1;
+            if (b.group === null) return 1;
+            return listIndex(data.settings.groups, a.group) - listIndex(data.settings.groups, b.group) || a.group.localeCompare(b.group, "ja");
+          }),
       }))
-      .sort((a, b) => orderIndex(a.category) - orderIndex(b.category) || a.category.localeCompare(b.category, "ja"));
-  }, [lastItems, data.settings.categories]);
+      .sort(
+        (a, b) =>
+          listIndex(data.settings.categories, a.category) - listIndex(data.settings.categories, b.category) ||
+          a.category.localeCompare(b.category, "ja"),
+      );
+  }, [lastItems, data.settings.categories, data.settings.groups]);
 
   // ----------------------------- 記録 -----------------------------
 
@@ -722,7 +918,7 @@ export default function App() {
       completedAt: doneDate ? `${doneDate}T12:00:00` : nowLocalStamp(),
       titleSnapshot: item.title,
       categorySnapshot: item.category,
-      kindSnapshot: item.kind,
+      groupSnapshot: item.group,
       note: "",
       count: null,
     };
@@ -752,7 +948,7 @@ export default function App() {
       completedAt: doneDate ? `${doneDate}T12:00:00` : nowLocalStamp(),
       titleSnapshot: entry.label || item.title,
       categorySnapshot: item.category,
-      kindSnapshot: item.kind,
+      groupSnapshot: item.group,
       note: "",
       count: null,
     };
@@ -825,7 +1021,9 @@ export default function App() {
       title: "",
       category: data.settings.categories[0] ?? "その他",
       newCategory: "",
-      kind: "楽しみ",
+      group: NO_GROUP_VALUE,
+      newGroup: "",
+      isStock: false,
       repeatType: "weekly",
       weekday: "1",
       monthDay: "1",
@@ -840,8 +1038,11 @@ export default function App() {
       title: item.title,
       category: item.category,
       newCategory: "",
-      kind: item.kind,
-      repeatType: item.repeatType,
+      group: item.group ?? NO_GROUP_VALUE,
+      newGroup: "",
+      isStock: item.isStock,
+      // 在庫にしない項目を編集中にONへ切り替えたとき、繰り返しの初期値が毎週になるようにしておく
+      repeatType: item.repeatType === "none" ? "weekly" : item.repeatType,
       weekday: item.weekday === null ? "1" : String(item.weekday),
       monthDay: item.monthDay === null ? "1" : String(item.monthDay),
       inventoryStartDate: item.inventoryStartDate ?? "",
@@ -862,25 +1063,35 @@ export default function App() {
       setMessage({ type: "error", text: "カテゴリ名を入れてください" });
       return;
     }
-    // 単発在庫は楽しみ専用。万一それ以外の種類のまま残っていたら随時に落とす
-    const repeatType: RepeatType = draft.repeatType === "single" && draft.kind !== "楽しみ" ? "none" : draft.repeatType;
+    if (draft.group === NEW_GROUP_VALUE && !draft.newGroup.trim()) {
+      setMessage({ type: "error", text: "グループ名を入れてください" });
+      return;
+    }
+    const group = draft.group === NEW_GROUP_VALUE ? draft.newGroup.trim() : draft.group === NO_GROUP_VALUE ? null : draft.group;
+    // 在庫にしない項目は repeatType=none 固定（曜日・日にち・起点日は持たない）
+    const isStock = draft.isStock;
+    const repeatType: RepeatType = isStock ? draft.repeatType : "none";
     const weekday = repeatType === "weekly" ? (Number(draft.weekday) as Weekday) : null;
     const monthDayNumber = Number(draft.monthDay);
     const monthDay = repeatType === "monthly" ? Math.min(Math.max(Math.round(monthDayNumber) || 1, 1), 31) : null;
-    const inventoryStartDate = /^\d{4}-\d{2}-\d{2}$/.test(draft.inventoryStartDate) ? draft.inventoryStartDate : undefined;
+    const inventoryStartDate =
+      (repeatType === "weekly" || repeatType === "monthly") && /^\d{4}-\d{2}-\d{2}$/.test(draft.inventoryStartDate)
+        ? draft.inventoryStartDate
+        : undefined;
     const stamp = nowLocalStamp();
 
     setData((current) => {
       const categories = current.settings.categories.includes(category)
         ? current.settings.categories
         : [...current.settings.categories, category];
+      const groups = group && !current.settings.groups.includes(group) ? [...current.settings.groups, group] : current.settings.groups;
       if (editingItemId) {
         return {
           ...current,
-          settings: { ...current.settings, categories },
+          settings: { ...current.settings, categories, groups },
           items: current.items.map((item) =>
             item.id === editingItemId
-              ? { ...item, title, category, kind: draft.kind, repeatType, weekday, monthDay, inventoryStartDate, memo: draft.memo.trim(), isActive: draft.isActive, updatedAt: stamp }
+              ? { ...item, title, category, group, isStock, repeatType, weekday, monthDay, inventoryStartDate, memo: draft.memo.trim(), isActive: draft.isActive, updatedAt: stamp }
               : item,
           ),
         };
@@ -889,7 +1100,8 @@ export default function App() {
         id: genId(),
         title,
         category,
-        kind: draft.kind,
+        group,
+        isStock,
         repeatType,
         weekday,
         monthDay,
@@ -899,11 +1111,60 @@ export default function App() {
         createdAt: stamp,
         updatedAt: stamp,
       };
-      return { ...current, settings: { ...current.settings, categories }, items: [...current.items, item] };
+      return { ...current, settings: { ...current.settings, categories, groups }, items: [...current.items, item] };
     });
     setDraft(null);
     setEditingItemId(null);
     setMessage({ type: "success", text: editingItemId ? "項目を更新しました" : "項目を追加しました" });
+  }
+
+  // 設定タブ：グループの追加（空でも「受け皿」として選択肢に残る）
+  function addGroup() {
+    const name = newGroupName.trim();
+    if (!name) {
+      setMessage({ type: "error", text: "グループ名を入れてください" });
+      return;
+    }
+    if (data.settings.groups.includes(name)) {
+      setMessage({ type: "error", text: "同じ名前のグループがあります" });
+      return;
+    }
+    setData((current) => ({ ...current, settings: { ...current.settings, groups: [...current.settings.groups, name] } }));
+    setNewGroupName("");
+    setMessage({ type: "success", text: `グループ「${name}」を追加しました` });
+  }
+
+  // グループ削除：配下の項目（と未消化の積み）も一緒に消える。完了ログはgroupSnapshot付きで残る
+  function deleteGroup(name: string) {
+    setData((current) => {
+      const removedItemIds = new Set(current.items.filter((item) => item.group === name).map((item) => item.id));
+      return {
+        ...current,
+        settings: { ...current.settings, groups: current.settings.groups.filter((group) => group !== name) },
+        items: current.items.filter((item) => item.group !== name),
+        stockEntries: current.stockEntries.filter((entry) => !removedItemIds.has(entry.itemId)),
+      };
+    });
+    setDeleteGroupTarget(null);
+    setMessage({ type: "success", text: `グループ「${name}」を削除しました（記録は残ります）` });
+  }
+
+  function dismissBackupNotice() {
+    localStorage.removeItem(BACKUP_NOTICE_KEY);
+    setBackupNoticeVisible(false);
+  }
+
+  // 前回タブ：グループ見出しの折りたたみ切り替え
+  function toggleGroupCollapse(key: string) {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
   }
 
   function deleteItem(itemId: string) {
@@ -938,6 +1199,8 @@ export default function App() {
         let incomingItems: Item[] = [];
         let incomingCompletions: Completion[] = [];
         let incomingStockEntries: StockEntry[] = [];
+        let incomingCategories: string[] = [];
+        let incomingGroups: string[] = [];
         let adoptDayBoundary: string | null = null;
         let sourceLabel = "";
 
@@ -946,6 +1209,9 @@ export default function App() {
           incomingItems = asNew.items;
           incomingCompletions = asNew.completions;
           incomingStockEntries = asNew.stockEntries;
+          // 空のカテゴリ・グループも「受け皿」なので設定ごと取り込む（シードJSON対応）
+          incomingCategories = asNew.settings.categories;
+          incomingGroups = asNew.settings.groups;
           sourceLabel = "かぞえ帳バックアップ";
         } else {
           const asOld = convertOldBackup(raw);
@@ -955,6 +1221,7 @@ export default function App() {
           }
           incomingItems = asOld.items;
           incomingCompletions = asOld.completions;
+          incomingCategories = asOld.items.map((item) => item.category);
           adoptDayBoundary = asOld.dayBoundaryTime;
           sourceLabel = "旧ゆるたすくバックアップ（変換して取り込み）";
         }
@@ -971,6 +1238,8 @@ export default function App() {
           incomingItems: addedItems,
           incomingCompletions: addedCompletions,
           incomingStockEntries: addedStockEntries,
+          incomingCategories,
+          incomingGroups,
           adoptDayBoundary,
           counts: [
             { label: "項目", loaded: incomingItems.length, added: addedItems.length, skipped: incomingItems.length - addedItems.length },
@@ -989,8 +1258,12 @@ export default function App() {
     if (!importPreview) return;
     setData((current) => {
       const categories = [...current.settings.categories];
-      for (const item of importPreview.incomingItems) {
-        if (!categories.includes(item.category)) categories.push(item.category);
+      for (const category of [...importPreview.incomingCategories, ...importPreview.incomingItems.map((item) => item.category)]) {
+        if (!categories.includes(category)) categories.push(category);
+      }
+      const groups = [...current.settings.groups];
+      for (const group of [...importPreview.incomingGroups, ...importPreview.incomingItems.map((item) => item.group)]) {
+        if (group && !groups.includes(group)) groups.push(group);
       }
       return {
         ...current,
@@ -1000,6 +1273,7 @@ export default function App() {
         settings: {
           ...current.settings,
           categories,
+          groups,
           dayBoundaryTime: importPreview.adoptDayBoundary ?? current.settings.dayBoundaryTime,
         },
       };
@@ -1033,8 +1307,8 @@ export default function App() {
   );
 
   const statCategories = useMemo(
-    () => buildStatCategories(statsCompletions, data.settings.categories),
-    [statsCompletions, data.settings.categories],
+    () => buildStatCategories(statsCompletions, data.settings.categories, data.settings.groups),
+    [statsCompletions, data.settings.categories, data.settings.groups],
   );
 
   const statsTotalCount = statCategories.reduce((sum, category) => sum + category.count, 0);
@@ -1065,6 +1339,16 @@ export default function App() {
         </div>
       )}
 
+      {backupNoticeVisible && (
+        <div className="notice-banner">
+          <p>データをv3形式に更新しました。念のためJSONエクスポートで控えを取っておくのがおすすめです（更新前のデータはこの端末内に退避済み）</p>
+          <div className="button-row">
+            <button type="button" className="primary-button" onClick={() => { exportJson(); dismissBackupNotice(); }}>JSONエクスポート</button>
+            <button type="button" onClick={dismissBackupNotice}>あとで</button>
+          </div>
+        </div>
+      )}
+
       <main className="view-stack">
         {activeTab === "home" && (
           <>
@@ -1076,17 +1360,17 @@ export default function App() {
             </section>
             {inventoryItems.length === 0 && singleStockItems.length === 0 && (
               <section className="section">
-                <p className="empty-text">在庫型の項目がまだありません。設定タブで「楽しみ × 毎週/毎月」の項目や「単発在庫（手で積む）」の箱をつくると、ここに在庫が積まれていきます。</p>
+                <p className="empty-text">在庫型の項目がまだありません。設定タブで「在庫にする」項目（毎週・毎月・単発在庫）をつくると、ここに在庫が積まれていきます。</p>
               </section>
             )}
-            {inventoryItems.map(({ item, dates }) => (
+            {/* 在庫がある項目だけをフルカードで上に。繰り返し在庫→単発在庫の並びはv2踏襲（確定仕様） */}
+            {repeatWithStock.map(({ item, dates }) => (
               <section key={item.id} className="section inventory-card">
                 <div className="inventory-card-head">
                   <h3>{item.title}</h3>
-                  <span className="count-chip">{dates.length > 0 ? `${dates.length}回ぶん` : "在庫なし"}</span>
+                  <span className="count-chip">{`${dates.length}回ぶん`}</span>
                 </div>
                 {item.memo && <p className="item-memo">{item.memo}</p>}
-                {dates.length === 0 && <p className="small-note">たまっている在庫はありません 🎉</p>}
                 <div className="inventory-date-list">
                   {dates.map((date) => (
                     <div key={date} className="inventory-date-row">
@@ -1102,15 +1386,20 @@ export default function App() {
                 </div>
               </section>
             ))}
-            {/* 単発在庫の箱は繰り返し在庫の下に並べる（確定仕様） */}
-            {singleStockItems.map(({ item, entries }) => (
+            {singleWithStock.map(({ item, entries, latest }) => (
               <section key={item.id} className="section inventory-card">
                 <div className="inventory-card-head">
                   <h3>{item.title}</h3>
-                  <span className="count-chip">{entries.length > 0 ? `${entries.length}件` : "在庫なし"}</span>
+                  <span className="count-chip">{`${entries.length}件`}</span>
                 </div>
                 {item.memo && <p className="item-memo">{item.memo}</p>}
-                {entries.length === 0 && <p className="small-note">積まれているものはありません。下の欄から積めます</p>}
+                {/* 単発在庫の箱にだけ前回消化を1行出す（繰り返し在庫には出さない：対象日リストの読みやすさ優先） */}
+                {latest && (
+                  <p className="single-latest">
+                    前回：{formatShortDate(doneDateOf(latest, boundary))}
+                    {latest.titleSnapshot && latest.titleSnapshot !== item.title ? `（${latest.titleSnapshot}）` : ""}
+                  </p>
+                )}
                 <div className="inventory-date-list">
                   {entries.map((entry) => (
                     <div key={entry.id} className="inventory-date-row">
@@ -1134,6 +1423,44 @@ export default function App() {
                 </div>
               </section>
             ))}
+            {/* 在庫0の項目は1行チップに畳む。タップで展開しても1件1行の軽い表示（フルカードは使わない） */}
+            {zeroStockCount > 0 && (
+              <section className="section zero-stock-section">
+                <button type="button" className="zero-stock-chip" onClick={() => setZeroStockOpen((open) => !open)}>
+                  <span>在庫なし {zeroStockCount}件</span>
+                  <span className="chip-caret">{zeroStockOpen ? "たたむ ▲" : "ひらく ▼"}</span>
+                </button>
+                {zeroStockOpen && (
+                  <div className="zero-stock-list">
+                    {repeatZero.map(({ item }) => (
+                      <div key={item.id} className="zero-stock-row">
+                        <span className="zero-stock-title">{item.title}</span>
+                        <span className="zero-stock-note">ぜんぶ楽しみ済み 🎉</span>
+                      </div>
+                    ))}
+                    {singleZero.map(({ item, latest }) => (
+                      <div key={item.id} className="zero-stock-row">
+                        <span className="zero-stock-title">{item.title}</span>
+                        {latest && (
+                          <span className="zero-stock-note">
+                            前回：{formatShortDate(doneDateOf(latest, boundary))}
+                            {latest.titleSnapshot && latest.titleSnapshot !== item.title ? `（${latest.titleSnapshot}）` : ""}
+                          </span>
+                        )}
+                        <div className="zero-stock-add">
+                          <input
+                            value={stockDrafts[item.id] ?? ""}
+                            onChange={(event) => setStockDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                            placeholder="積むものの名前"
+                          />
+                          <button type="button" onClick={() => addStockEntry(item)}>積む</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </>
         )}
 
@@ -1143,33 +1470,67 @@ export default function App() {
               <h2>前回いつ？</h2>
               <p className="small-note">事実だけを並べる棚。目標も達成率もありません。「やった」長押しで過去の日付でも記録できます</p>
             </section>
-            {lastGroups.length === 0 && (
+            {lastCategories.length === 0 && (
               <section className="section">
-                <p className="empty-text">前回日型の項目がまだありません。設定タブで習慣・振り返り・作業・随時の楽しみをつくると、ここに並びます。</p>
+                <p className="empty-text">前回日型の項目がまだありません。設定タブで「在庫にしない」項目（洗濯・サウナ・記事執筆など）をつくると、ここに並びます。</p>
               </section>
             )}
-            {lastGroups.map((group) => (
-              <section key={group.category} className="section">
-                <h3 className="group-title">{group.category}</h3>
-                <div className="last-list">
-                  {group.entries.map(({ item, latest }) => {
-                    const latestDoneDate = latest ? doneDateOf(latest, boundary) : null;
+            {/* カテゴリ＞グループ＞項目 の3階層。グループは見出しだけで「やった」ボタンは付けない（確定仕様） */}
+            {lastCategories.map((categoryBlock) => (
+              <section key={categoryBlock.category} className="section">
+                <h3 className="group-title">{categoryBlock.category}</h3>
+                <div className="last-category-body">
+                  {categoryBlock.groups.map((groupBlock) => {
+                    const collapseKey = `${categoryBlock.category}|${groupBlock.group ?? ""}`;
+                    const collapsed = groupBlock.group !== null && collapsedGroups.has(collapseKey);
                     return (
-                      <div key={item.id} className="last-row">
-                        <div className="last-info">
-                          <span className="last-title">{item.title}</span>
-                          <span className="last-meta">
-                            {latest && latestDoneDate
-                              ? `前回：${formatShortDate(latestDoneDate)}${latest.note ? `（${latest.note}）` : ""}・${diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}`
-                              : "記録はこれから"}
-                          </span>
-                        </div>
-                        <RecordButton
-                          label="やった"
-                          className="did-button"
-                          onTap={() => recordCompletion(item, todayLife, null)}
-                          onLongPress={() => openDatePick(item, null)}
-                        />
+                      <div key={collapseKey} className="last-group-block">
+                        {groupBlock.group !== null && (
+                          <button type="button" className="last-group-head" onClick={() => toggleGroupCollapse(collapseKey)}>
+                            <span>{groupBlock.group}</span>
+                            <span className="chip-caret">{collapsed ? "▼" : "▲"}</span>
+                          </button>
+                        )}
+                        {!collapsed && (
+                          <div className={`last-list${groupBlock.group !== null ? " grouped" : ""}`}>
+                            {groupBlock.entries.map(({ item, recent }) => {
+                              const latest = recent[0] ?? null;
+                              const latestDoneDate = latest ? doneDateOf(latest, boundary) : null;
+                              return (
+                                <div key={item.id} className="last-row">
+                                  <div className="last-info">
+                                    <span className="last-title">{item.title}</span>
+                                    <span className="last-meta">
+                                      {latest && latestDoneDate ? (
+                                        <>
+                                          {`前回：${formatShortDate(latestDoneDate)}${latest.note ? `（${latest.note}）` : ""}・${diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}`}
+                                          {/* 2回前・3回前は補助情報。主役は前回日と経過日数（確定仕様） */}
+                                          {recent.length > 1 && (
+                                            <span className="last-history">
+                                              {" ／ "}
+                                              {recent
+                                                .slice(1)
+                                                .map((completion) => formatShortDate(doneDateOf(completion, boundary)))
+                                                .join("・")}
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : (
+                                        "記録はこれから"
+                                      )}
+                                    </span>
+                                  </div>
+                                  <RecordButton
+                                    label="やった"
+                                    className="did-button"
+                                    onTap={() => recordCompletion(item, todayLife, null)}
+                                    onLongPress={() => openDatePick(item, null)}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1213,12 +1574,22 @@ export default function App() {
                     <tr><th>項目</th><th>件数</th><th>数量</th></tr>
                   </thead>
                   <tbody>
-                    {category.rows.map((row) => (
-                      <tr key={row.title}>
-                        <td>{row.title}</td>
-                        <td className="num">{row.count}</td>
-                        <td className="num">{row.quantity}</td>
-                      </tr>
+                    {/* グループは見出し行だけ。合計行は出さない（重みの違う行動を足した数に意味がないため） */}
+                    {category.groups.map((group) => (
+                      <Fragment key={group.group ?? "__direct__"}>
+                        {group.group !== null && (
+                          <tr className="stat-group-row">
+                            <td colSpan={3}>{group.group}</td>
+                          </tr>
+                        )}
+                        {group.rows.map((row) => (
+                          <tr key={`${group.group ?? ""}|${row.title}`} className={group.group !== null ? "stat-grouped-row" : undefined}>
+                            <td>{row.title}</td>
+                            <td className="num">{row.count}</td>
+                            <td className="num">{row.quantity}</td>
+                          </tr>
+                        ))}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -1231,7 +1602,6 @@ export default function App() {
           <>
             <section className="section">
               <h2>項目</h2>
-              <p className="small-note">種類が「楽しみ × 毎週/毎月/単発在庫」なら在庫タブに、それ以外は前回タブに並びます</p>
               {!draft && (
                 <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
                   ＋ 項目をつくる
@@ -1242,7 +1612,7 @@ export default function App() {
                   <h3>{editingItemId ? "項目を編集" : "新しい項目"}</h3>
                   <label>
                     タイトル（必須）
-                    <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例：週刊少年ジャンプ、サウナ、note記事/開発垢" />
+                    <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例：週刊少年ジャンプ、サウナ、記事執筆" />
                   </label>
                   <div className="form-grid-2">
                     <label>
@@ -1255,18 +1625,13 @@ export default function App() {
                       </select>
                     </label>
                     <label>
-                      種類
-                      <select
-                        value={draft.kind}
-                        onChange={(event) => {
-                          const kind = event.target.value as Kind;
-                          // 単発在庫は楽しみ専用なので、種類を変えたら繰り返しを戻す
-                          setDraft({ ...draft, kind, repeatType: kind !== "楽しみ" && draft.repeatType === "single" ? "weekly" : draft.repeatType });
-                        }}
-                      >
-                        {KINDS.map((kind) => (
-                          <option key={kind} value={kind}>{kind}</option>
+                      グループ（任意）
+                      <select value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })}>
+                        <option value={NO_GROUP_VALUE}>（なし）</option>
+                        {data.settings.groups.map((group) => (
+                          <option key={group} value={group}>{group}</option>
                         ))}
+                        <option value={NEW_GROUP_VALUE}>＋新しいグループ</option>
                       </select>
                     </label>
                   </div>
@@ -1276,39 +1641,59 @@ export default function App() {
                       <input value={draft.newCategory} onChange={(event) => setDraft({ ...draft, newCategory: event.target.value })} />
                     </label>
                   )}
+                  {draft.group === NEW_GROUP_VALUE && (
+                    <label>
+                      新しいグループ名
+                      <input value={draft.newGroup} onChange={(event) => setDraft({ ...draft, newGroup: event.target.value })} placeholder="例：アニメ、開発垢、家事" />
+                    </label>
+                  )}
                   <div className="form-grid-2">
                     <label>
-                      繰り返し
-                      <select value={draft.repeatType} onChange={(event) => setDraft({ ...draft, repeatType: event.target.value as RepeatType })}>
-                        <option value="weekly">毎週</option>
-                        <option value="monthly">毎月</option>
-                        <option value="none">随時（ルールなし）</option>
-                        {draft.kind === "楽しみ" && <option value="single">単発在庫（手で積む）</option>}
+                      在庫にする
+                      <select
+                        value={draft.isStock ? "yes" : "no"}
+                        onChange={(event) => setDraft({ ...draft, isStock: event.target.value === "yes" })}
+                      >
+                        <option value="no">在庫にしない</option>
+                        <option value="yes">在庫にする</option>
                       </select>
+                      <span className="field-help">オンにすると、やっていない分が在庫としてたまります</span>
                     </label>
-                    {draft.repeatType === "weekly" && (
+                    {draft.isStock && (
                       <label>
-                        曜日
-                        <select value={draft.weekday} onChange={(event) => setDraft({ ...draft, weekday: event.target.value })}>
-                          {WEEKDAY_LABELS.map((label, index) => (
-                            <option key={label} value={index}>{label}曜日</option>
-                          ))}
+                        繰り返し
+                        <select value={draft.repeatType} onChange={(event) => setDraft({ ...draft, repeatType: event.target.value as RepeatType })}>
+                          <option value="weekly">毎週</option>
+                          <option value="monthly">毎月</option>
+                          <option value="single">単発在庫（手で積む）</option>
                         </select>
                       </label>
                     )}
-                    {draft.repeatType === "monthly" && (
-                      <label>
-                        日にち
-                        <input type="number" min={1} max={31} value={draft.monthDay} onChange={(event) => setDraft({ ...draft, monthDay: event.target.value })} />
-                      </label>
-                    )}
                   </div>
-                  {draft.kind === "楽しみ" && (draft.repeatType === "weekly" || draft.repeatType === "monthly") && (
-                    <label>
-                      在庫の起点日（任意）
-                      <input type="date" value={draft.inventoryStartDate} onChange={(event) => setDraft({ ...draft, inventoryStartDate: event.target.value })} />
-                      <span className="field-help">この日以降の対象日だけを在庫として数えます。未入力なら作成日から</span>
-                    </label>
+                  {/* 在庫にしない項目には繰り返し・曜日・起点日を出さない（死んだUIを置かない） */}
+                  {draft.isStock && (draft.repeatType === "weekly" || draft.repeatType === "monthly") && (
+                    <div className="form-grid-2">
+                      {draft.repeatType === "weekly" ? (
+                        <label>
+                          曜日
+                          <select value={draft.weekday} onChange={(event) => setDraft({ ...draft, weekday: event.target.value })}>
+                            {WEEKDAY_LABELS.map((label, index) => (
+                              <option key={label} value={index}>{label}曜日</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <label>
+                          日にち
+                          <input type="number" min={1} max={31} value={draft.monthDay} onChange={(event) => setDraft({ ...draft, monthDay: event.target.value })} />
+                        </label>
+                      )}
+                      <label>
+                        この日から数え始める（任意）
+                        <input type="date" value={draft.inventoryStartDate} onChange={(event) => setDraft({ ...draft, inventoryStartDate: event.target.value })} />
+                        <span className="field-help">この日以降の対象日だけを在庫として数えます。未入力なら作成日から</span>
+                      </label>
+                    </div>
                   )}
                   <label>
                     メモ（任意・1行）
@@ -1339,7 +1724,7 @@ export default function App() {
                       <div className="item-row-info">
                         <span className="item-row-title">{item.title}</span>
                         <span className="item-row-meta">
-                          {isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.kind}・{item.category}・{repeatLabel}
+                          {isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.category}{item.group ? `＞${item.group}` : ""}・{repeatLabel}
                           {item.isActive ? "" : "・停止中"}
                         </span>
                       </div>
@@ -1351,6 +1736,36 @@ export default function App() {
                   );
                 })}
                 {data.items.length === 0 && <p className="empty-text">項目はまだありません。</p>}
+              </div>
+            </section>
+
+            <section className="section">
+              <h2>グループ</h2>
+              <p className="small-note">カテゴリと項目の間の中分類（アニメ、開発垢、家事…）。項目が0件のグループは在庫・前回タブに出ませんが、選択肢としてはここに残ります</p>
+              <div className="group-add-row">
+                <input
+                  value={newGroupName}
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                  placeholder="例：アニメ、開発垢、家事"
+                />
+                <button type="button" className="primary-button" onClick={addGroup}>追加</button>
+              </div>
+              <div className="item-list">
+                {data.settings.groups.map((group) => {
+                  const memberCount = data.items.filter((item) => item.group === group).length;
+                  return (
+                    <div key={group} className="item-row">
+                      <div className="item-row-info">
+                        <span className="item-row-title">{group}</span>
+                        <span className="item-row-meta">{memberCount > 0 ? `項目 ${memberCount}件` : "項目なし（受け皿）"}</span>
+                      </div>
+                      <div className="item-row-actions">
+                        <button type="button" className="subtle-button" onClick={() => setDeleteGroupTarget(group)}>削除</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {data.settings.groups.length === 0 && <p className="empty-text">グループはまだありません。項目フォームからも追加できます。</p>}
               </div>
             </section>
 
@@ -1479,6 +1894,22 @@ export default function App() {
             <div className="button-row dialog-actions">
               <button type="button" className="danger-button" onClick={() => deleteItem(deleteTargetId)}>削除する</button>
               <button type="button" onClick={() => setDeleteTargetId(null)}>やめる</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteGroupTarget && (
+        <div className="dialog-backdrop">
+          <div className="dialog">
+            <h3>グループ「{deleteGroupTarget}」を削除しますか？</h3>
+            <p>
+              このグループの項目（{data.items.filter((item) => item.group === deleteGroupTarget).length}件）も一緒に消えます。単発在庫に積んだまま消化していないものも消えます。
+              これまでの記録（完了ログ・集計）はグループ名の控え付きで残ります。
+            </p>
+            <div className="button-row dialog-actions">
+              <button type="button" className="danger-button" onClick={() => deleteGroup(deleteGroupTarget)}>削除する</button>
+              <button type="button" onClick={() => setDeleteGroupTarget(null)}>やめる</button>
             </div>
           </div>
         </div>

@@ -38,8 +38,36 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .stock-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; }
 .stock-add-row button { flex: 0 0 auto; min-height: 44px; padding: 0.5rem 1rem; }
 
+/* 単発在庫の箱に出す「前回：7/8（国宝）」の1行 */
+.single-latest { margin: 0; color: #5f7d93; font-size: 0.88rem; }
+
+/* 在庫0の項目をまとめる「在庫なし N件」チップと、展開時の軽い1行表示 */
+.zero-stock-section { display: grid; gap: 0.55rem; }
+.zero-stock-chip { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; width: 100%; border-radius: 999px; background: #eef5fa; border-color: #d3e4ef; color: #4c6578; font-weight: 700; }
+.chip-caret { color: #7d97a9; font-size: 0.82rem; font-weight: 600; }
+.zero-stock-list { display: grid; gap: 0.4rem; }
+.zero-stock-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.6rem; padding: 0.45rem 0.6rem; border: 1px solid #e3eef6; border-radius: 10px; background: #fbfdff; }
+.zero-stock-title { font-weight: 700; color: #4c6578; }
+.zero-stock-note { color: #7d97a9; font-size: 0.84rem; }
+.zero-stock-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.4rem; align-items: center; margin-left: auto; flex: 1 1 12rem; }
+.zero-stock-add input { padding: 0.4rem 0.6rem; font-size: 0.9rem; }
+.zero-stock-add button { min-height: 36px; padding: 0.35rem 0.75rem; }
+
+/* v2→v3移行直後に一度だけ出すバックアップ推奨バナー */
+.notice-banner { display: grid; gap: 0.6rem; border: 1px solid #d8c9a3; background: #fdf8ec; border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 0.9rem; }
+.notice-banner p { margin: 0; color: #6b5a33; font-size: 0.92rem; line-height: 1.6; }
+.notice-banner .button-row button { flex: 0 1 auto; min-height: 38px; padding: 0.45rem 0.9rem; }
+
 .group-title { margin: 0 0 0.6rem; font-size: 1rem; color: #33566f; }
 .last-list { display: grid; gap: 0.5rem; }
+
+/* 前回タブ：カテゴリ＞グループ＞項目の3階層 */
+.last-category-body { display: grid; gap: 0.55rem; }
+.last-group-block { display: grid; gap: 0.45rem; }
+.last-group-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; width: 100%; min-height: 38px; padding: 0.4rem 0.65rem; border: 1px solid #d3e4ef; border-radius: 10px; background: #f1f7fb; color: #33566f; font-weight: 750; text-align: left; }
+.last-list.grouped { margin-left: 0.75rem; }
+/* 2回前・3回前は補助情報として淡く小さく（主役は前回日と経過日数） */
+.last-history { color: #9db0bf; font-size: 0.8rem; }
 .last-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.55rem; padding: 0.55rem 0.65rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; }
 .last-info { display: grid; gap: 0.15rem; min-width: 0; }
 .last-title { font-weight: 750; line-height: 1.4; }
@@ -59,6 +87,9 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .stat-table th { color: #5f7d93; font-size: 0.82rem; font-weight: 700; }
 .stat-table .num, .stat-table th:nth-child(n+2) { text-align: right; width: 4.5rem; }
 .stat-table tr:last-child td { border-bottom: none; }
+/* 集計のグループ見出し行（合計は出さない）と、その配下の項目行のインデント */
+.stat-group-row td { padding-top: 0.6rem; color: #33667f; font-size: 0.86rem; font-weight: 750; border-bottom: none; }
+.stat-grouped-row td:first-child { padding-left: 1.1rem; }
 
 .add-item-button { width: 100%; min-height: 48px; margin-bottom: 0.8rem; }
 .primary-button { background: #33667f; color: #ffffff; border-color: #33667f; font-weight: 750; }
@@ -81,6 +112,10 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .item-row-meta { color: #5f7d93; font-size: 0.84rem; line-height: 1.5; }
 .item-row-actions { display: flex; gap: 0.35rem; }
 .item-row-actions button { min-height: 38px; padding: 0.4rem 0.65rem; }
+
+/* 設定タブ：グループ管理の追加入力行 */
+.group-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; margin: 0.7rem 0 0.8rem; }
+.group-add-row button { flex: 0 0 auto; min-height: 44px; padding: 0.5rem 1rem; }
 
 .data-actions { display: grid; gap: 0.7rem; }
 .data-action-block { display: grid; gap: 0.4rem; padding: 0.75rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; }

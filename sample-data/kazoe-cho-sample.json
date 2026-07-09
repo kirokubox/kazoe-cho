@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "items": [
     {
       "id": "sample-item-1",
       "title": "週刊マンガ誌",
       "category": "楽しみ",
-      "kind": "楽しみ",
+      "group": "マンガ",
+      "isStock": true,
       "repeatType": "weekly",
       "weekday": 1,
       "monthDay": null,
@@ -17,9 +18,24 @@
     },
     {
       "id": "sample-item-2",
+      "title": "映画",
+      "category": "楽しみ",
+      "group": "映画",
+      "isStock": true,
+      "repeatType": "single",
+      "weekday": null,
+      "monthDay": null,
+      "isActive": true,
+      "memo": "見たい作品を積む箱",
+      "createdAt": "2026-06-01T10:00:00",
+      "updatedAt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": "sample-item-3",
       "title": "サウナ",
-      "category": "生活",
-      "kind": "習慣",
+      "category": "楽しみ",
+      "group": null,
+      "isStock": false,
       "repeatType": "none",
       "weekday": null,
       "monthDay": null,
@@ -29,15 +45,30 @@
       "updatedAt": "2026-06-01T10:00:00"
     },
     {
-      "id": "sample-item-3",
-      "title": "note記事/開発垢",
-      "category": "発信",
-      "kind": "作業",
+      "id": "sample-item-4",
+      "title": "記事執筆",
+      "category": "作業",
+      "group": "開発垢",
+      "isStock": false,
       "repeatType": "none",
       "weekday": null,
       "monthDay": null,
       "isActive": true,
       "memo": "具体は完了メモへ",
+      "createdAt": "2026-06-01T10:00:00",
+      "updatedAt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": "sample-item-5",
+      "title": "洗濯",
+      "category": "生活",
+      "group": "家事",
+      "isStock": false,
+      "repeatType": "none",
+      "weekday": null,
+      "monthDay": null,
+      "isActive": true,
+      "memo": "",
       "createdAt": "2026-06-01T10:00:00",
       "updatedAt": "2026-06-01T10:00:00"
     }
@@ -50,36 +81,45 @@
       "completedAt": "2026-06-03T21:30:00",
       "titleSnapshot": "週刊マンガ誌",
       "categorySnapshot": "楽しみ",
-      "kindSnapshot": "楽しみ",
+      "groupSnapshot": "マンガ",
       "note": "",
       "count": null
     },
     {
       "id": "sample-completion-2",
-      "itemId": "sample-item-2",
+      "itemId": "sample-item-3",
       "targetDate": "2026-06-28",
       "completedAt": "2026-06-28T16:00:00",
       "titleSnapshot": "サウナ",
-      "categorySnapshot": "生活",
-      "kindSnapshot": "習慣",
+      "categorySnapshot": "楽しみ",
+      "groupSnapshot": null,
       "note": "〇〇温泉",
       "count": null
     },
     {
       "id": "sample-completion-3",
-      "itemId": "sample-item-3",
+      "itemId": "sample-item-4",
       "targetDate": "2026-07-02",
       "completedAt": "2026-07-02T22:10:00",
-      "titleSnapshot": "note記事/開発垢",
-      "categorySnapshot": "発信",
-      "kindSnapshot": "作業",
+      "titleSnapshot": "記事執筆",
+      "categorySnapshot": "作業",
+      "groupSnapshot": "開発垢",
       "note": "記事下書き",
       "count": 2
+    }
+  ],
+  "stockEntries": [
+    {
+      "id": "sample-stock-1",
+      "itemId": "sample-item-2",
+      "label": "国宝",
+      "addedAt": "2026-07-01T09:00:00"
     }
   ],
   "settings": {
     "dayBoundaryTime": "05:00",
     "weekStartDay": 1,
-    "categories": ["楽しみ", "生活", "仕事", "お金", "人・連絡", "趣味", "開発", "SNS", "発信", "振り返り", "その他"]
+    "categories": ["楽しみ", "おでかけ", "作業", "生活", "お金", "仕事", "その他"],
+    "groups": ["マンガ", "映画", "開発垢", "家事"]
   }
 }
