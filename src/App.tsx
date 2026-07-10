@@ -529,6 +529,12 @@ function isSingleStockItem(item: Item) {
   return item.isStock && item.repeatType === "single";
 }
 
+// 繰り返し在庫（毎週・毎月）。対象日が固有名（7/6号）と単位（1対象日＝1回）を兼ねるため、
+// 記録直後のダイアログ（メモ・数量）を出さずワンタップで確定する（v3.2）
+function isRepeatStockItem(item: Item) {
+  return item.isStock && (item.repeatType === "weekly" || item.repeatType === "monthly");
+}
+
 function matchesRepeatRule(item: Item, date: Date) {
   if (item.repeatType === "weekly") return item.weekday !== null && date.getDay() === item.weekday;
   if (item.repeatType === "monthly") {
@@ -953,11 +959,14 @@ export default function App() {
       count: null,
     };
     setData((current) => ({ ...current, completions: [completion, ...current.completions] }));
-    const dateLabel = isInventoryItem(item) ? `${formatDateWithWeekday(targetDate)}ぶん` : formatDateWithWeekday(doneDate ?? targetDate);
-    setEnrichTarget({ completionId: completion.id, title: item.title, dateLabel });
+    setMessage(null);
+    // 繰り返し在庫はワンタップ完了（長押し→日付選択でも同じ）。対象日が固有名と単位を兼ねるため、
+    // 記録直後ダイアログを開かない。取り消しは在庫タブの前回行に一本化する（v3.2）
+    if (isRepeatStockItem(item)) return;
+    // ここに到達するのは前回日型のみ（単発在庫は consumeStockEntry を通る）
+    setEnrichTarget({ completionId: completion.id, title: item.title, dateLabel: formatDateWithWeekday(doneDate ?? targetDate) });
     setEnrichNote("");
     setEnrichCount("");
-    setMessage(null);
   }
 
   // 単発在庫に1件積む。名前は任意（空でも積める）
