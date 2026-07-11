@@ -65,6 +65,7 @@ type AppData = {
 };
 
 type Tab = "home" | "last" | "stats" | "settings";
+type SettingsStockFilter = "all" | "repeat" | "single" | "none";
 
 type ItemDraft = {
   title: string;
@@ -813,6 +814,10 @@ export default function App() {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ItemDraft | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [itemSearch, setItemSearch] = useState("");
+  const [itemCategoryFilter, setItemCategoryFilter] = useState("");
+  const [itemGroupFilter, setItemGroupFilter] = useState("");
+  const [itemStockFilter, setItemStockFilter] = useState<SettingsStockFilter>("all");
 
   // 設定タブ：グループ管理
   const [newGroupName, setNewGroupName] = useState("");
@@ -897,6 +902,33 @@ export default function App() {
   }, [data.items, data.stockEntries, data.completions, completedKeys, todayLife, data.settings.groups]);
 
   const inventoryTotal = inventoryGroups.reduce((sum, group) => sum + group.totalDates + group.totalItems, 0);
+  const recurringInventoryTotal = inventoryGroups.reduce((sum, group) => sum + group.totalDates, 0);
+  const scheduledSingleItemIds = useMemo(
+    () => new Set(data.items.filter((item) => item.isActive && isSingleStockItem(item) && (item.group === "予定" || item.group === "音楽")).map((item) => item.id)),
+    [data.items],
+  );
+  const scheduledInventoryTotal = data.stockEntries.filter((entry) => scheduledSingleItemIds.has(entry.itemId)).length;
+
+  const filteredSettingsItems = useMemo(() => {
+    const query = itemSearch.trim().toLocaleLowerCase("ja");
+    return data.items.filter((item) => {
+      const matchesQuery =
+        query === "" ||
+        item.title.toLocaleLowerCase("ja").includes(query) ||
+        item.category.toLocaleLowerCase("ja").includes(query) ||
+        (item.group ?? "").toLocaleLowerCase("ja").includes(query);
+      const matchesCategory = itemCategoryFilter === "" || item.category === itemCategoryFilter;
+      const matchesGroup =
+        itemGroupFilter === "" ||
+        (itemGroupFilter === NO_GROUP_VALUE ? item.group === null : item.group === itemGroupFilter);
+      const matchesStock =
+        itemStockFilter === "all" ||
+        (itemStockFilter === "repeat" && (item.repeatType === "weekly" || item.repeatType === "monthly")) ||
+        (itemStockFilter === "single" && item.repeatType === "single") ||
+        (itemStockFilter === "none" && !item.isStock);
+      return matchesQuery && matchesCategory && matchesGroup && matchesStock;
+    });
+  }, [data.items, itemSearch, itemCategoryFilter, itemGroupFilter, itemStockFilter]);
 
   const lastItems = useMemo(
     () =>
@@ -1430,7 +1462,7 @@ export default function App() {
             <section className="section inventory-lead">
               <h2>楽しみの在庫</h2>
               <p className="small-note">
-                {inventoryTotal > 0 ? `いま ${inventoryTotal} 回ぶん たまっています。どれ楽しむ？` : "在庫はぜんぶ楽しみ済み。次が積まれるのを待つだけ"}
+                全体{inventoryTotal}個 / 継続{recurringInventoryTotal}回ぶん / 予定{scheduledInventoryTotal}件
               </p>
             </section>
             {inventoryGroups.length === 0 && (
@@ -1705,8 +1737,46 @@ export default function App() {
               <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
                 ＋ 項目をつくる
               </button>
+              <div className="item-filters">
+                <label className="item-search-field">
+                  項目を検索
+                  <input
+                    type="search"
+                    value={itemSearch}
+                    onChange={(event) => setItemSearch(event.target.value)}
+                    placeholder="タイトル・カテゴリ・グループ"
+                  />
+                </label>
+                <div className="item-filter-grid">
+                  <label>
+                    カテゴリ
+                    <select value={itemCategoryFilter} onChange={(event) => setItemCategoryFilter(event.target.value)}>
+                      <option value="">すべて</option>
+                      {data.settings.categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    グループ
+                    <select value={itemGroupFilter} onChange={(event) => setItemGroupFilter(event.target.value)}>
+                      <option value="">すべて</option>
+                      <option value={NO_GROUP_VALUE}>（なし）</option>
+                      {data.settings.groups.map((group) => <option key={group} value={group}>{group}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    在庫種別
+                    <select value={itemStockFilter} onChange={(event) => setItemStockFilter(event.target.value as SettingsStockFilter)}>
+                      <option value="all">すべて</option>
+                      <option value="repeat">継続</option>
+                      <option value="single">単発</option>
+                      <option value="none">在庫にしない</option>
+                    </select>
+                  </label>
+                </div>
+                <p className="item-filter-count">{filteredSettingsItems.length} / {data.items.length}件</p>
+              </div>
               <div className="item-list">
-                {data.items.map((item) => {
+                {filteredSettingsItems.map((item) => {
                   const repeatLabel =
                     item.repeatType === "weekly" && item.weekday !== null
                       ? `毎週${WEEKDAY_LABELS[item.weekday]}`
@@ -1732,6 +1802,7 @@ export default function App() {
                   );
                 })}
                 {data.items.length === 0 && <p className="empty-text">項目はまだありません。</p>}
+                {data.items.length > 0 && filteredSettingsItems.length === 0 && <p className="empty-text">条件に合う項目はありません。</p>}
               </div>
             </section>
 

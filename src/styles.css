@@ -107,6 +107,10 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .stat-grouped-row td:first-child { padding-left: 1.1rem; }
 
 .add-item-button { width: 100%; min-height: 48px; margin-bottom: 0.8rem; }
+.item-filters { display: grid; gap: 0.6rem; margin-bottom: 0.8rem; padding: 0.7rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; }
+.item-filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.item-filter-grid label, .item-search-field { min-width: 0; font-size: 0.86rem; }
+.item-filter-count { margin: 0; color: #5f7d93; font-size: 0.84rem; text-align: right; }
 .primary-button { background: #33667f; color: #ffffff; border-color: #33667f; font-weight: 750; }
 .subtle-button { color: #33566f; border-color: #c5d9e8; }
 .danger-button { background: #8c4a43; border-color: #8c4a43; color: #ffffff; }
@@ -168,4 +172,10 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
   .bottom-nav button { min-height: 44px; padding: 0.5rem 0.2rem; }
   .section { padding: 0.85rem; }
   .form-grid-2 { grid-template-columns: 1fr; }
+  .item-form-dialog { width: min(100%, 520px); padding: 1rem 0.85rem; }
+  .item-form-dialog .form-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; }
+  .item-form-dialog .form-grid-2 label { font-size: 0.88rem; }
+  .item-form-dialog .form-grid-2 input, .item-form-dialog .form-grid-2 select { min-width: 0; padding: 0.65rem 0.55rem; }
+  .item-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .item-filter-grid label:last-child { grid-column: 1 / -1; }
 }
