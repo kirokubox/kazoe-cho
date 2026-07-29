@@ -76,8 +76,11 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 .group-title { margin: 0 0 0.6rem; font-size: 1rem; color: #33566f; }
 .last-list { display: grid; gap: 0.5rem; }
 
-/* 前回タブ：カテゴリ＞グループ＞項目の3階層 */
-.last-category-body { display: grid; gap: 0.55rem; }
+/* 前回タブ：カテゴリ＞グループ＞項目の3階層。カテゴリ見出しもグループ見出しと同じ操作感（chip-caret）で折りたためる（v3.4） */
+.last-category-body { display: grid; gap: 0.55rem; margin-top: 0.6rem; }
+.last-category-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; width: 100%; min-height: 0; margin: 0; padding: 0; border: none; background: transparent; text-align: left; }
+.last-category-head:hover { background: transparent; border-color: transparent; }
+.last-category-head span:first-child { font-size: 1rem; font-weight: 800; color: #33566f; }
 .last-group-block { display: grid; gap: 0.45rem; }
 .last-group-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; width: 100%; min-height: 38px; padding: 0.4rem 0.65rem; border: 1px solid #d3e4ef; border-radius: 10px; background: #f1f7fb; color: #33566f; font-weight: 750; text-align: left; }
 .last-list.grouped { margin-left: 0.75rem; }
@@ -105,6 +108,12 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 /* 集計のグループ見出し行（合計は出さない）と、その配下の項目行のインデント */
 .stat-group-row td { padding-top: 0.6rem; color: #33667f; font-size: 0.86rem; font-weight: 750; border-bottom: none; }
 .stat-grouped-row td:first-child { padding-left: 1.1rem; }
+
+/* 設定タブ：「項目」「グループ」欄の折りたたみ見出し（初期状態は常に閉じ、永続化しない。v3.4） */
+.settings-section-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; width: 100%; min-height: 0; margin: 0; padding: 0; border: none; background: transparent; text-align: left; }
+.settings-section-head:hover { background: transparent; border-color: transparent; }
+.settings-section-head h2 { margin: 0; }
+.settings-section-body { margin-top: 0.8rem; }
 
 .add-item-button { width: 100%; min-height: 48px; margin-bottom: 0.8rem; }
 .item-filters { display: grid; gap: 0.6rem; margin-bottom: 0.8rem; padding: 0.7rem; border: 1px solid #ddeaf3; border-radius: 10px; background: #fafdff; }

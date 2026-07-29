@@ -67,6 +67,12 @@ type AppData = {
 type Tab = "home" | "last" | "stats" | "settings";
 type SettingsStockFilter = "all" | "repeat" | "single" | "none";
 
+// 前回タブの折りたたみ開閉状態の永続化形。持つのは「開いているもの」の集合（詳細はFOLD_STATE_KEYの説明を参照）
+type FoldState = {
+  openCategories: string[];
+  openGroups: string[]; // キーは既存の collapsedGroups と同じ `カテゴリ|グループ` 形式
+};
+
 type ItemDraft = {
   title: string;
   category: string;
@@ -142,6 +148,9 @@ const STORAGE_KEY = "yuki-kazoe-cho-data";
 const ACTIVE_VIEW_KEY = "yuki-kazoe-cho-active-view";
 // v2→v3移行の直後に一度だけ「バックアップ推奨」の導線を出すためのフラグ
 const BACKUP_NOTICE_KEY = "yuki-kazoe-cho-v3-backup-notice";
+// 前回タブのカテゴリ・グループ折りたたみの開閉状態（v3.4）。UI状態でありデータではないため、
+// JSONエクスポート／インポートの対象には含めない
+const FOLD_STATE_KEY = "yuki-kazoe-cho-fold-state";
 
 const KINDS: Kind[] = ["楽しみ", "習慣", "振り返り", "作業"];
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -452,6 +461,22 @@ function loadActiveView(): Tab {
   return stored === "home" || stored === "last" || stored === "stats" || stored === "settings" ? stored : "home";
 }
 
+// キー無し（初回起動）＝開いているものが0件＝すべて閉じた状態、が自然に成り立つ（開集合方式の理由）。
+// 削除・改名されたカテゴリ・グループ名が残っていても実害はない（描画側で存在しない名前は使われないだけ）ので掃除しない
+function loadFoldState(): { openCategories: Set<string>; openGroups: Set<string> } {
+  try {
+    const raw = localStorage.getItem(FOLD_STATE_KEY);
+    if (!raw) return { openCategories: new Set(), openGroups: new Set() };
+    const parsed = JSON.parse(raw) as Partial<FoldState> | null;
+    return {
+      openCategories: new Set(stringList(parsed?.openCategories) ?? []),
+      openGroups: new Set(stringList(parsed?.openGroups) ?? []),
+    };
+  } catch {
+    return { openCategories: new Set(), openGroups: new Set() };
+  }
+}
+
 // ----------------------------- 旧ゆるたすくからの変換 -----------------------------
 
 // 旧 task-manager-backup 形式の recurringTasks / recurringCompletions を新形式へ変換する。
@@ -652,6 +677,18 @@ function downloadTextFile(filename: string, text: string, mime: string) {
   URL.revokeObjectURL(url);
 }
 
+// グループ×項目の粒度のMarkdown表。グループの合計行は出さない（buildStatCategoriesと同じ理由）。
+// 全件エクスポート（週次・月次）と期間エクスポートの両方から使う共通部品
+function statTable(groups: StatGroup[]): string[] {
+  const rows: string[] = ["| グループ | 項目 | 件数 | 数量 |", "| --- | --- | ---: | ---: |"];
+  for (const group of groups) {
+    for (const row of group.rows) {
+      rows.push(`| ${group.group ?? ""} | ${row.title} | ${row.count} | ${row.quantity} |`);
+    }
+  }
+  return rows;
+}
+
 function buildMarkdownExport(data: AppData, todayLife: string) {
   const lines: string[] = [];
   lines.push(`# かぞえ帳エクスポート（${todayLife}）`);
@@ -682,17 +719,9 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
   }
   lines.push("");
 
-  const statTable = (completions: Completion[]) => {
-    const rows: string[] = ["| グループ | 項目 | 件数 | 数量 |", "| --- | --- | ---: | ---: |"];
-    for (const category of buildStatCategories(completions, data.settings.categories, data.settings.groups)) {
-      for (const group of category.groups) {
-        for (const row of group.rows) {
-          rows.push(`| ${group.group ?? ""} | ${row.title} | ${row.count} | ${row.quantity} |`);
-        }
-      }
-    }
-    return rows;
-  };
+  // 全件エクスポートの週次・月次表はカテゴリを跨いだ1枚の表（既存挙動を維持。カテゴリ別の内訳は出さない）
+  const statTableAcrossCategories = (completions: Completion[]) =>
+    statTable(buildStatCategories(completions, data.settings.categories, data.settings.groups).flatMap((category) => category.groups));
 
   const byWeek = new Map<string, Completion[]>();
   const byMonth = new Map<string, Completion[]>();
@@ -709,7 +738,7 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
   for (const weekKey of Array.from(byWeek.keys()).sort().reverse()) {
     lines.push(`### ${formatDateWithWeekday(weekKey)}〜${formatDateWithWeekday(addDaysKey(weekKey, 6))}`);
     lines.push("");
-    lines.push(...statTable(byWeek.get(weekKey)!));
+    lines.push(...statTableAcrossCategories(byWeek.get(weekKey)!));
     lines.push("");
   }
 
@@ -718,7 +747,7 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
   for (const monthKey of Array.from(byMonth.keys()).sort().reverse()) {
     lines.push(`### ${formatMonthKey(monthKey)}`);
     lines.push("");
-    lines.push(...statTable(byMonth.get(monthKey)!));
+    lines.push(...statTableAcrossCategories(byMonth.get(monthKey)!));
     lines.push("");
   }
 
@@ -731,6 +760,25 @@ function buildMarkdownExport(data: AppData, todayLife: string) {
     const count = completion.count !== null ? ` ×${completion.count}` : "";
     lines.push(`- ${doneDate} ${completion.titleSnapshot}${note}${count}｜対象日 ${completion.targetDate}`);
   }
+  lines.push("");
+  return lines.join("\n");
+}
+
+// 集計タブの「表示中の期間だけ」エクスポート（v3.4）。全件エクスポートと違い、カテゴリごとに
+// 小計を出し、末尾に全体合計を出す。カテゴリ・グループの粒度は画面の集計とそろえる
+function buildPeriodStatsMarkdown(periodLabel: string, statCategories: StatCategory[], totalCount: number, totalQuantity: number) {
+  const lines: string[] = [];
+  lines.push(`# かぞえ帳集計（${periodLabel}）`);
+  lines.push("");
+  for (const category of statCategories) {
+    lines.push(`## ${category.category}（${category.count}件・数量${category.quantity}）`);
+    lines.push("");
+    lines.push(...statTable(category.groups));
+    lines.push("");
+  }
+  lines.push(`## 全体合計`);
+  lines.push("");
+  lines.push(`${totalCount}件・数量${totalQuantity}`);
   lines.push("");
   return lines.join("\n");
 }
@@ -804,8 +852,9 @@ export default function App() {
   // 積んだもの（StockEntry）の取り下げ（＝記録を作らず積みから消す）
   const [withdrawTarget, setWithdrawTarget] = useState<{ entryId: string; label: string } | null>(null);
 
-  // 前回タブ：折りたたんだグループ（キー＝`カテゴリ|グループ`）
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // 前回タブ：開いているカテゴリ・グループ（キー無し＝初回起動＝すべて閉じた状態。開閉はfold-stateへ保存する）
+  const [openCategories, setOpenCategories] = useState<Set<string>>(() => loadFoldState().openCategories);
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => loadFoldState().openGroups);
 
   // v2→v3移行の直後に一度だけ出すバックアップ推奨バナー
   const [backupNoticeVisible, setBackupNoticeVisible] = useState(() => localStorage.getItem(BACKUP_NOTICE_KEY) === "pending");
@@ -823,6 +872,10 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState("");
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<string | null>(null);
 
+  // 設定タブ：「項目」「グループ」欄の開閉。前回タブと違い永続化しない（毎回閉じた状態で開く）
+  const [itemsSectionOpen, setItemsSectionOpen] = useState(false);
+  const [groupsSectionOpen, setGroupsSectionOpen] = useState(false);
+
   // インポート
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -838,6 +891,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(ACTIVE_VIEW_KEY, activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    const payload: FoldState = { openCategories: Array.from(openCategories), openGroups: Array.from(openGroups) };
+    localStorage.setItem(FOLD_STATE_KEY, JSON.stringify(payload));
+  }, [openCategories, openGroups]);
 
   const boundary = data.settings.dayBoundaryTime;
   const todayLife = lifeDateKey(new Date(), boundary);
@@ -1261,9 +1319,22 @@ export default function App() {
     setBackupNoticeVisible(false);
   }
 
-  // 前回タブ：グループ見出しの折りたたみ切り替え
-  function toggleGroupCollapse(key: string) {
-    setCollapsedGroups((current) => {
+  // 前回タブ：カテゴリ見出しの開閉切り替え
+  function toggleCategoryOpen(category: string) {
+    setOpenCategories((current) => {
+      const next = new Set(current);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  }
+
+  // 前回タブ：グループ見出しの開閉切り替え
+  function toggleGroupOpen(key: string) {
+    setOpenGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) {
         next.delete(key);
@@ -1295,6 +1366,13 @@ export default function App() {
 
   function exportMarkdown() {
     downloadTextFile(`kazoe-cho-export-${todayLife}.md`, buildMarkdownExport(data, todayLife), "text/markdown");
+    setMessage({ type: "success", text: "Markdownをエクスポートしました" });
+  }
+
+  // 集計タブ：いま画面に表示中の期間だけをMarkdownエクスポート（v3.4）。全件エクスポートとは用途が違うので併存させる
+  function exportPeriodMarkdown() {
+    const filename = `kazoe-cho-集計-${statsPeriod.fileLabel}.md`;
+    downloadTextFile(filename, buildPeriodStatsMarkdown(statsPeriod.label, statCategories, statsTotalCount, statsTotalQuantity), "text/markdown");
     setMessage({ type: "success", text: "Markdownをエクスポートしました" });
   }
 
@@ -1398,12 +1476,15 @@ export default function App() {
       const end = addDaysKey(start, 6);
       return {
         label: `${formatDateWithWeekday(start)}〜${formatDateWithWeekday(end)}`,
+        // 期間エクスポートのファイル名用（YYYY-MM-DD〜YYYY-MM-DD）。表示ラベルは曜日つきなのでファイル名には使わない
+        fileLabel: `${start}〜${end}`,
         contains: (doneDate: string) => doneDate >= start && doneDate <= end,
       };
     }
     const monthKey = shiftMonthKey(monthKeyOf(todayLife), -statsOffset);
     return {
       label: formatMonthKey(monthKey),
+      fileLabel: monthKey,
       contains: (doneDate: string) => monthKeyOf(doneDate) === monthKey,
     };
   }, [statsMode, statsOffset, todayLife, data.settings.weekStartDay]);
@@ -1597,78 +1678,89 @@ export default function App() {
                 <p className="empty-text">前回日型の項目がまだありません。設定タブで「在庫にしない」項目（洗濯・サウナ・記事執筆など）をつくると、ここに並びます。</p>
               </section>
             )}
-            {/* カテゴリ＞グループ＞項目 の3階層。グループは見出しだけで「やった」ボタンは付けない（確定仕様） */}
-            {lastCategories.map((categoryBlock) => (
-              <section key={categoryBlock.category} className="section">
-                <h3 className="group-title">{categoryBlock.category}</h3>
-                <div className="last-category-body">
-                  {categoryBlock.groups.map((groupBlock) => {
-                    const collapseKey = `${categoryBlock.category}|${groupBlock.group ?? ""}`;
-                    const collapsed = groupBlock.group !== null && collapsedGroups.has(collapseKey);
-                    return (
-                      <div key={collapseKey} className="last-group-block">
-                        {groupBlock.group !== null && (
-                          <button type="button" className="last-group-head" onClick={() => toggleGroupCollapse(collapseKey)}>
-                            <span>{groupBlock.group}</span>
-                            <span className="chip-caret">{collapsed ? "▼" : "▲"}</span>
-                          </button>
-                        )}
-                        {!collapsed && (
-                          <div className={`last-list${groupBlock.group !== null ? " grouped" : ""}`}>
-                            {groupBlock.entries.map(({ item, recent }) => {
-                              const latest = recent[0] ?? null;
-                              const latestDoneDate = latest ? doneDateOf(latest, boundary) : null;
-                              return (
-                                <div key={item.id} className="last-row">
-                                  <div className="last-info">
-                                    <span className="last-title">{item.title}</span>
-                                    <span className="last-meta">
-                                      {latest && latestDoneDate ? (
-                                        <>
-                                          前回：
-                                          {/* 直近3回の各日付はタップで取り消せる（画面に出ている記録だけが対象・誤タップの救済） */}
-                                          <button type="button" className="undo-date-chip" onClick={() => setUndoTargetId(latest.id)}>
-                                            {formatShortDate(latestDoneDate)}
-                                            {latest.note ? `（${latest.note}）` : ""}・
-                                            {diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}
-                                          </button>
-                                          {/* 2回前・3回前は補助情報として淡く小さく。主役は前回日と経過日数（確定仕様） */}
-                                          {recent.length > 1 && (
-                                            <span className="last-history">
-                                              {" ／ "}
-                                              {recent.slice(1).map((completion, index) => (
-                                                <Fragment key={completion.id}>
-                                                  {index > 0 && "・"}
-                                                  <button type="button" className="undo-date-chip subtle" onClick={() => setUndoTargetId(completion.id)}>
-                                                    {formatShortDate(doneDateOf(completion, boundary))}
-                                                  </button>
-                                                </Fragment>
-                                              ))}
-                                            </span>
+            {/* カテゴリ＞グループ＞項目 の3階層。初回起動はすべて閉じ、以降の開閉状態はfold-stateに保存する（v3.4） */}
+            {lastCategories.map((categoryBlock) => {
+              // カテゴリの件数＝配下の全グループ＋カテゴリ直下（group=null）の項目総数
+              const categoryCount = categoryBlock.groups.reduce((sum, group) => sum + group.entries.length, 0);
+              const categoryOpen = openCategories.has(categoryBlock.category);
+              return (
+                <section key={categoryBlock.category} className="section">
+                  <button type="button" className="last-category-head" onClick={() => toggleCategoryOpen(categoryBlock.category)}>
+                    <span>{categoryBlock.category} {categoryCount}件</span>
+                    <span className="chip-caret">{categoryOpen ? "▲" : "▼"}</span>
+                  </button>
+                  {categoryOpen && (
+                    <div className="last-category-body">
+                      {categoryBlock.groups.map((groupBlock) => {
+                        const collapseKey = `${categoryBlock.category}|${groupBlock.group ?? ""}`;
+                        // グループ未設定（null）はカテゴリ直下の項目なので見出しを持たず、カテゴリが開けば常に表示する
+                        const groupOpen = groupBlock.group === null || openGroups.has(collapseKey);
+                        return (
+                          <div key={collapseKey} className="last-group-block">
+                            {groupBlock.group !== null && (
+                              <button type="button" className="last-group-head" onClick={() => toggleGroupOpen(collapseKey)}>
+                                <span>{groupBlock.group} {groupBlock.entries.length}件</span>
+                                <span className="chip-caret">{groupOpen ? "▲" : "▼"}</span>
+                              </button>
+                            )}
+                            {groupOpen && (
+                              <div className={`last-list${groupBlock.group !== null ? " grouped" : ""}`}>
+                                {groupBlock.entries.map(({ item, recent }) => {
+                                  const latest = recent[0] ?? null;
+                                  const latestDoneDate = latest ? doneDateOf(latest, boundary) : null;
+                                  return (
+                                    <div key={item.id} className="last-row">
+                                      <div className="last-info">
+                                        <span className="last-title">{item.title}</span>
+                                        <span className="last-meta">
+                                          {latest && latestDoneDate ? (
+                                            <>
+                                              前回：
+                                              {/* 直近3回の各日付はタップで取り消せる（画面に出ている記録だけが対象・誤タップの救済） */}
+                                              <button type="button" className="undo-date-chip" onClick={() => setUndoTargetId(latest.id)}>
+                                                {formatShortDate(latestDoneDate)}
+                                                {latest.note ? `（${latest.note}）` : ""}・
+                                                {diffDays(latestDoneDate, todayLife) === 0 ? "今日" : `${diffDays(latestDoneDate, todayLife)}日前`}
+                                              </button>
+                                              {/* 2回前・3回前は補助情報として淡く小さく。主役は前回日と経過日数（確定仕様） */}
+                                              {recent.length > 1 && (
+                                                <span className="last-history">
+                                                  {" ／ "}
+                                                  {recent.slice(1).map((completion, index) => (
+                                                    <Fragment key={completion.id}>
+                                                      {index > 0 && "・"}
+                                                      <button type="button" className="undo-date-chip subtle" onClick={() => setUndoTargetId(completion.id)}>
+                                                        {formatShortDate(doneDateOf(completion, boundary))}
+                                                      </button>
+                                                    </Fragment>
+                                                  ))}
+                                                </span>
+                                              )}
+                                            </>
+                                          ) : (
+                                            "記録はこれから"
                                           )}
-                                        </>
-                                      ) : (
-                                        "記録はこれから"
-                                      )}
-                                    </span>
-                                  </div>
-                                  <RecordButton
-                                    label="やった"
-                                    className="did-button"
-                                    onTap={() => recordCompletion(item, todayLife, null)}
-                                    onLongPress={() => openDatePick(item, null)}
-                                  />
-                                </div>
-                              );
-                            })}
+                                        </span>
+                                      </div>
+                                      <RecordButton
+                                        label="やった"
+                                        className="did-button"
+                                        onTap={() => recordCompletion(item, todayLife, null)}
+                                        onLongPress={() => openDatePick(item, null)}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
           </>
         )}
 
@@ -1727,113 +1819,131 @@ export default function App() {
                 </table>
               </section>
             ))}
+            <section className="section">
+              <button type="button" className="primary-button" onClick={exportPeriodMarkdown}>この期間をMarkdownエクスポート</button>
+              <p className="small-note">今表示している期間（{statsPeriod.label}）だけを書き出します。全件のエクスポートは設定タブにあります</p>
+            </section>
           </>
         )}
 
         {activeTab === "settings" && (
           <>
             <section className="section">
-              <h2>項目</h2>
-              <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
-                ＋ 項目をつくる
+              <button type="button" className="settings-section-head" onClick={() => setItemsSectionOpen((value) => !value)}>
+                <h2>項目 {data.items.length}件</h2>
+                <span className="chip-caret">{itemsSectionOpen ? "▲" : "▼"}</span>
               </button>
-              <div className="item-filters">
-                <label className="item-search-field">
-                  項目を検索
-                  <input
-                    type="search"
-                    value={itemSearch}
-                    onChange={(event) => setItemSearch(event.target.value)}
-                    placeholder="タイトル・カテゴリ・グループ"
-                  />
-                </label>
-                <div className="item-filter-grid">
-                  <label>
-                    カテゴリ
-                    <select value={itemCategoryFilter} onChange={(event) => setItemCategoryFilter(event.target.value)}>
-                      <option value="">すべて</option>
-                      {data.settings.categories.map((category) => <option key={category} value={category}>{category}</option>)}
-                    </select>
-                  </label>
-                  <label>
-                    グループ
-                    <select value={itemGroupFilter} onChange={(event) => setItemGroupFilter(event.target.value)}>
-                      <option value="">すべて</option>
-                      <option value={NO_GROUP_VALUE}>（なし）</option>
-                      {data.settings.groups.map((group) => <option key={group} value={group}>{group}</option>)}
-                    </select>
-                  </label>
-                  <label>
-                    在庫種別
-                    <select value={itemStockFilter} onChange={(event) => setItemStockFilter(event.target.value as SettingsStockFilter)}>
-                      <option value="all">すべて</option>
-                      <option value="repeat">継続</option>
-                      <option value="single">単発</option>
-                      <option value="none">在庫にしない</option>
-                    </select>
-                  </label>
-                </div>
-                <p className="item-filter-count">{filteredSettingsItems.length} / {data.items.length}件</p>
-              </div>
-              <div className="item-list">
-                {filteredSettingsItems.map((item) => {
-                  const repeatLabel =
-                    item.repeatType === "weekly" && item.weekday !== null
-                      ? `毎週${WEEKDAY_LABELS[item.weekday]}`
-                      : item.repeatType === "monthly" && item.monthDay !== null
-                        ? `毎月${item.monthDay}日`
-                        : item.repeatType === "single"
-                          ? "手で積む"
-                          : "随時";
-                  return (
-                    <div key={item.id} className={`item-row ${item.isActive ? "" : "inactive"}`}>
-                      <div className="item-row-info">
-                        <span className="item-row-title">{item.title}</span>
-                        <span className="item-row-meta">
-                          {isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.category}{item.group ? `＞${item.group}` : ""}・{repeatLabel}
-                          {item.isActive ? "" : "・停止中"}
-                        </span>
-                      </div>
-                      <div className="item-row-actions">
-                        <button type="button" onClick={() => { setDraft(draftFromItem(item)); setEditingItemId(item.id); }}>編集</button>
-                        <button type="button" className="subtle-button" onClick={() => setDeleteTargetId(item.id)}>削除</button>
-                      </div>
+              {itemsSectionOpen && (
+                <div className="settings-section-body">
+                  <button type="button" className="primary-button add-item-button" onClick={() => { setDraft(emptyDraft()); setEditingItemId(null); }}>
+                    ＋ 項目をつくる
+                  </button>
+                  <div className="item-filters">
+                    <label className="item-search-field">
+                      項目を検索
+                      <input
+                        type="search"
+                        value={itemSearch}
+                        onChange={(event) => setItemSearch(event.target.value)}
+                        placeholder="タイトル・カテゴリ・グループ"
+                      />
+                    </label>
+                    <div className="item-filter-grid">
+                      <label>
+                        カテゴリ
+                        <select value={itemCategoryFilter} onChange={(event) => setItemCategoryFilter(event.target.value)}>
+                          <option value="">すべて</option>
+                          {data.settings.categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        グループ
+                        <select value={itemGroupFilter} onChange={(event) => setItemGroupFilter(event.target.value)}>
+                          <option value="">すべて</option>
+                          <option value={NO_GROUP_VALUE}>（なし）</option>
+                          {data.settings.groups.map((group) => <option key={group} value={group}>{group}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        在庫種別
+                        <select value={itemStockFilter} onChange={(event) => setItemStockFilter(event.target.value as SettingsStockFilter)}>
+                          <option value="all">すべて</option>
+                          <option value="repeat">継続</option>
+                          <option value="single">単発</option>
+                          <option value="none">在庫にしない</option>
+                        </select>
+                      </label>
                     </div>
-                  );
-                })}
-                {data.items.length === 0 && <p className="empty-text">項目はまだありません。</p>}
-                {data.items.length > 0 && filteredSettingsItems.length === 0 && <p className="empty-text">条件に合う項目はありません。</p>}
-              </div>
+                    <p className="item-filter-count">{filteredSettingsItems.length} / {data.items.length}件</p>
+                  </div>
+                  <div className="item-list">
+                    {filteredSettingsItems.map((item) => {
+                      const repeatLabel =
+                        item.repeatType === "weekly" && item.weekday !== null
+                          ? `毎週${WEEKDAY_LABELS[item.weekday]}`
+                          : item.repeatType === "monthly" && item.monthDay !== null
+                            ? `毎月${item.monthDay}日`
+                            : item.repeatType === "single"
+                              ? "手で積む"
+                              : "随時";
+                      return (
+                        <div key={item.id} className={`item-row ${item.isActive ? "" : "inactive"}`}>
+                          <div className="item-row-info">
+                            <span className="item-row-title">{item.title}</span>
+                            <span className="item-row-meta">
+                              {isSingleStockItem(item) ? "単発在庫" : isInventoryItem(item) ? "在庫型" : "前回日型"}・{item.category}{item.group ? `＞${item.group}` : ""}・{repeatLabel}
+                              {item.isActive ? "" : "・停止中"}
+                            </span>
+                          </div>
+                          <div className="item-row-actions">
+                            <button type="button" onClick={() => { setDraft(draftFromItem(item)); setEditingItemId(item.id); }}>編集</button>
+                            <button type="button" className="subtle-button" onClick={() => setDeleteTargetId(item.id)}>削除</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {data.items.length === 0 && <p className="empty-text">項目はまだありません。</p>}
+                    {data.items.length > 0 && filteredSettingsItems.length === 0 && <p className="empty-text">条件に合う項目はありません。</p>}
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="section">
-              <h2>グループ</h2>
-              <p className="small-note">カテゴリと項目の間の中分類（アニメ、開発垢、家事…）。項目が0件のグループは在庫・前回タブに出ませんが、選択肢としてはここに残ります。項目が入っているグループは削除できません（先に項目を移すか削除してください）</p>
-              <div className="group-add-row">
-                <input
-                  value={newGroupName}
-                  onChange={(event) => setNewGroupName(event.target.value)}
-                  placeholder="例：アニメ、開発垢、家事"
-                />
-                <button type="button" className="primary-button" onClick={addGroup}>追加</button>
-              </div>
-              <div className="item-list">
-                {data.settings.groups.map((group) => {
-                  const hasMembers = data.items.some((item) => item.group === group);
-                  return (
-                    <div key={group} className="item-row">
-                      <div className="item-row-info">
-                        <span className="item-row-title">{group}</span>
-                        {hasMembers && <span className="item-row-meta">項目が入っています</span>}
-                      </div>
-                      <div className="item-row-actions">
-                        <button type="button" className="subtle-button" disabled={hasMembers} onClick={() => setDeleteGroupTarget(group)}>削除</button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {data.settings.groups.length === 0 && <p className="empty-text">グループはまだありません。項目フォームからも追加できます。</p>}
-              </div>
+              <button type="button" className="settings-section-head" onClick={() => setGroupsSectionOpen((value) => !value)}>
+                <h2>グループ {data.settings.groups.length}件</h2>
+                <span className="chip-caret">{groupsSectionOpen ? "▲" : "▼"}</span>
+              </button>
+              {groupsSectionOpen && (
+                <div className="settings-section-body">
+                  <p className="small-note">カテゴリと項目の間の中分類（アニメ、開発垢、家事…）。項目が0件のグループは在庫・前回タブに出ませんが、選択肢としてはここに残ります。項目が入っているグループは削除できません（先に項目を移すか削除してください）</p>
+                  <div className="group-add-row">
+                    <input
+                      value={newGroupName}
+                      onChange={(event) => setNewGroupName(event.target.value)}
+                      placeholder="例：アニメ、開発垢、家事"
+                    />
+                    <button type="button" className="primary-button" onClick={addGroup}>追加</button>
+                  </div>
+                  <div className="item-list">
+                    {data.settings.groups.map((group) => {
+                      const hasMembers = data.items.some((item) => item.group === group);
+                      return (
+                        <div key={group} className="item-row">
+                          <div className="item-row-info">
+                            <span className="item-row-title">{group}</span>
+                            {hasMembers && <span className="item-row-meta">項目が入っています</span>}
+                          </div>
+                          <div className="item-row-actions">
+                            <button type="button" className="subtle-button" disabled={hasMembers} onClick={() => setDeleteGroupTarget(group)}>削除</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {data.settings.groups.length === 0 && <p className="empty-text">グループはまだありません。項目フォームからも追加できます。</p>}
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="section">
