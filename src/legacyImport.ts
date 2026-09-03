@@ -1,7 +1,7 @@
 import { CATEGORY_MIGRATION_MAP, DAY_BOUNDARY_OPTIONS } from "./constants";
 import { nowLocalStamp } from "./dateUtils";
 import { isKind, isWeekdayValue } from "./storage";
-import type { Completion, Item, Kind, RepeatType, Settings, Weekday } from "./types";
+import type { Completion, Item, Kind, RepeatType } from "./types";
 
 // ----------------------------- 旧ゆるたすくからの変換 -----------------------------
 

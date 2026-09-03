@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, DAY_BOUNDARY_OPTIONS, FOLD_STATE_KEY, NEW_CATEGORY_VALUE, NEW_GROUP_VALUE, NO_GROUP_VALUE, STORAGE_KEY, WEEKDAY_LABELS } from "./constants";
-import { addDays, addDaysKey, diffDays, formatDateWithWeekday, formatMonthKey, formatShortDate, genId, lifeDateKey, monthKeyOf, nowLocalStamp, shiftMonthKey, weekStartOf } from "./dateUtils";
+import { addDaysKey, diffDays, formatDateWithWeekday, formatMonthKey, formatShortDate, genId, lifeDateKey, monthKeyOf, nowLocalStamp, shiftMonthKey, weekStartOf } from "./dateUtils";
 import { buildMarkdownExport, buildPeriodStatsMarkdown, downloadTextFile } from "./exporters";
 import { buildStatCategories, doneDateOf, inventoryDates, isInventoryItem, isRepeatStockItem, isSingleStockItem, latestCompletionAmong, recentCompletionsOf } from "./itemLogic";
 import { convertOldBackup } from "./legacyImport";
 import { RecordButton } from "./RecordButton";
 import { loadActiveView, loadData, loadFoldState, normalizeAppData } from "./storage";
-import type { AppData, Completion, DatePickTarget, EnrichTarget, FoldState, ImportPreview, InventoryEntry, Item, ItemDraft, RepeatType, Settings, SettingsStockFilter, StockEntry, Tab, Weekday } from "./types";
+import type { AppData, Completion, DatePickTarget, EnrichTarget, FoldState, ImportPreview, InventoryEntry, Item, ItemDraft, RepeatType, SettingsStockFilter, StockEntry, Tab, Weekday } from "./types";
 
 // ---------------------------------------------------------------------------
 // かぞえ帳：「いつから？いくつ？」に一瞬で答える行動台帳

@@ -1,5 +1,5 @@
 import { MAX_INVENTORY_LOOKBACK_DAYS } from "./constants";
-import { addDays, addDaysKey, dateFromKey, daysInMonth, lifeDateKey } from "./dateUtils";
+import { addDaysKey, dateFromKey, daysInMonth, lifeDateKey } from "./dateUtils";
 import type { Completion, Item, StatCategory, StatGroup, StatRow } from "./types";
 
 // ----------------------------- 表示ロジック -----------------------------

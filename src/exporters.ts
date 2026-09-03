@@ -1,7 +1,7 @@
 import { WEEKDAY_LABELS } from "./constants";
-import { addDays, addDaysKey, formatDateWithWeekday, formatMonthKey, monthKeyOf, weekStartOf } from "./dateUtils";
+import { addDaysKey, formatDateWithWeekday, formatMonthKey, monthKeyOf, weekStartOf } from "./dateUtils";
 import { buildStatCategories, doneDateOf, isInventoryItem, isSingleStockItem } from "./itemLogic";
-import type { AppData, Completion, Item, StatCategory, StatGroup, Tab, Weekday } from "./types";
+import type { AppData, Completion, StatCategory, StatGroup } from "./types";
 
 // ----------------------------- エクスポート -----------------------------
 
