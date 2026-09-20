@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, DAY_BOUNDARY_OPTIONS, FOLD_STATE_KEY, NEW_CATEGORY_VALUE, NEW_GROUP_VALUE, NO_GROUP_VALUE, STORAGE_KEY, WEEKDAY_LABELS } from "./constants";
-import { addDaysKey, diffDays, formatDateWithWeekday, formatMonthKey, formatShortDate, genId, lifeDateKey, monthKeyOf, nowLocalStamp, shiftMonthKey, weekStartOf } from "./dateUtils";
+import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, FOLD_STATE_KEY, NEW_CATEGORY_VALUE, NEW_GROUP_VALUE, NO_GROUP_VALUE, STORAGE_KEY, WEEKDAY_LABELS } from "./constants";
+import { addDaysKey, dateKeyFromDate, diffDays, formatDateWithWeekday, formatMonthKey, formatShortDate, genId, isDeepNightHour, monthKeyOf, nowLocalStamp, shiftMonthKey, weekStartOf } from "./dateUtils";
 import { buildMarkdownExport, buildPeriodStatsMarkdown, downloadTextFile } from "./exporters";
 import { buildStatCategories, doneDateOf, inventoryDates, isInventoryItem, isRepeatStockItem, isSingleStockItem, latestCompletionAmong, recentCompletionsOf } from "./itemLogic";
 import { convertOldBackup } from "./legacyImport";
 import { RecordButton } from "./RecordButton";
 import { loadActiveView, loadData, loadFoldState, normalizeAppData } from "./storage";
-import type { AppData, Completion, DatePickTarget, EnrichTarget, FoldState, ImportPreview, InventoryEntry, Item, ItemDraft, RepeatType, SettingsStockFilter, StockEntry, Tab, Weekday } from "./types";
+import type { AppData, Completion, DatePickTarget, EnrichTarget, FoldState, ImportPreview, InventoryEntry, Item, ItemDraft, NightConfirmTarget, RepeatType, SettingsStockFilter, StockEntry, Tab, Weekday } from "./types";
 
 // ---------------------------------------------------------------------------
 // かぞえ帳：「いつから？いくつ？」に一瞬で答える行動台帳
@@ -30,6 +30,9 @@ export default function App() {
   // 長押し→過去日選択ダイアログ
   const [datePickTarget, setDatePickTarget] = useState<DatePickTarget | null>(null);
   const [pickedDate, setPickedDate] = useState("");
+
+  // 深夜（0:00〜5:00）のワンタップ記録だけ「昨日／今日」を確認する（2026-09-20・暦日統一とセットで追加）
+  const [nightConfirmTarget, setNightConfirmTarget] = useState<NightConfirmTarget | null>(null);
 
   // 単発在庫：箱ごとの「積む」入力欄
   const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
@@ -87,8 +90,8 @@ export default function App() {
     localStorage.setItem(FOLD_STATE_KEY, JSON.stringify(payload));
   }, [openCategories, openGroups]);
 
-  const boundary = data.settings.dayBoundaryTime;
-  const todayLife = lifeDateKey(new Date(), boundary);
+  // 2026-09-20：日付境界（生活日付）の丸めを廃止し、暦日（0時〜24時で区切る実際のカレンダー日）にそろえた
+  const todayLife = dateKeyFromDate(new Date());
 
   const completedKeys = useMemo(
     () => new Set(data.completions.map((completion) => `${completion.itemId}:${completion.targetDate}`)),
@@ -230,7 +233,7 @@ export default function App() {
       id: genId(),
       itemId: item.id,
       targetDate,
-      // 過去日記録は正午扱いにして、日付境界をまたいでも選んだ日に集計されるようにする
+      // 過去日記録・深夜タップの確認で選んだ日は正午扱いにして、確実に選んだ暦日に集計されるようにする
       completedAt: doneDate ? `${doneDate}T12:00:00` : nowLocalStamp(),
       titleSnapshot: item.title,
       categorySnapshot: item.category,
@@ -285,6 +288,49 @@ export default function App() {
     setEnrichNote("");
     setEnrichCount("");
     setMessage(null);
+  }
+
+  // ----------------------------- 深夜タップの確認（A2） -----------------------------
+  // その場のワンタップ（onTap）だけが対象。長押しの日付選択（openDatePick）は既に日付を選ぶ導線なので通さない。
+  // 0:00〜4:59にタップしたときだけ「昨日／今日」を1回確認し、選んだ日を既存の日付指定と同じ経路
+  // （recordCompletion / consumeStockEntry の doneDate 引数）に乗せる。新しい保存フィールドは増やさない
+
+  function tapRepeatStock(item: Item, date: string) {
+    if (isDeepNightHour(new Date())) {
+      setNightConfirmTarget({ kind: "repeat", item, date });
+      return;
+    }
+    recordCompletion(item, date, null);
+  }
+
+  function tapSingleStock(item: Item, entry: StockEntry) {
+    if (isDeepNightHour(new Date())) {
+      setNightConfirmTarget({ kind: "single", item, stockEntry: entry });
+      return;
+    }
+    consumeStockEntry(item, entry, null);
+  }
+
+  function tapLastItem(item: Item) {
+    if (isDeepNightHour(new Date())) {
+      setNightConfirmTarget({ kind: "last", item });
+      return;
+    }
+    recordCompletion(item, todayLife, null);
+  }
+
+  // 確認ダイアログで「昨日」「今日」のどちらかを選んだあとに呼ぶ。doneDateに選んだ日を渡す
+  function resolveNightConfirm(doneDate: string) {
+    if (!nightConfirmTarget) return;
+    const target = nightConfirmTarget;
+    setNightConfirmTarget(null);
+    if (target.kind === "repeat") {
+      recordCompletion(target.item, target.date, doneDate);
+    } else if (target.kind === "single") {
+      consumeStockEntry(target.item, target.stockEntry, doneDate);
+    } else {
+      recordCompletion(target.item, doneDate, doneDate);
+    }
   }
 
   function saveEnrichment() {
@@ -680,8 +726,8 @@ export default function App() {
   }, [statsMode, statsOffset, todayLife, data.settings.weekStartDay]);
 
   const statsCompletions = useMemo(
-    () => data.completions.filter((completion) => statsPeriod.contains(doneDateOf(completion, boundary))),
-    [data.completions, statsPeriod, boundary],
+    () => data.completions.filter((completion) => statsPeriod.contains(doneDateOf(completion))),
+    [data.completions, statsPeriod],
   );
 
   const statCategories = useMemo(
@@ -758,7 +804,7 @@ export default function App() {
                   {/* グループ配下の最新1件。タップで取り消せる（誤タップの救済） */}
                   {group.latest && (
                     <button type="button" className="single-latest undo-latest" onClick={() => setUndoTargetId(group.latest!.id)}>
-                      前回：{formatShortDate(doneDateOf(group.latest, boundary))}（{group.latest.titleSnapshot}）
+                      前回：{formatShortDate(doneDateOf(group.latest))}（{group.latest.titleSnapshot}）
                     </button>
                   )}
                   {group.stocked.length > 0 && <div className="card-divider" />}
@@ -775,7 +821,7 @@ export default function App() {
                                 <RecordButton
                                   label="楽しんだ"
                                   className="enjoy-button"
-                                  onTap={() => recordCompletion(entry.item, date, null)}
+                                  onTap={() => tapRepeatStock(entry.item, date)}
                                   onLongPress={() => openDatePick(entry.item, date)}
                                 />
                               </div>
@@ -798,7 +844,7 @@ export default function App() {
                                     <RecordButton
                                       label="楽しんだ"
                                       className="enjoy-button"
-                                      onTap={() => consumeStockEntry(entry.item, stock, null)}
+                                      onTap={() => tapSingleStock(entry.item, stock)}
                                       onLongPress={() => openDatePick(entry.item, null, stock)}
                                     />
                                   </div>
@@ -897,7 +943,7 @@ export default function App() {
                               <div className={`last-list${groupBlock.group !== null ? " grouped" : ""}`}>
                                 {groupBlock.entries.map(({ item, recent }) => {
                                   const latest = recent[0] ?? null;
-                                  const latestDoneDate = latest ? doneDateOf(latest, boundary) : null;
+                                  const latestDoneDate = latest ? doneDateOf(latest) : null;
                                   return (
                                     <div key={item.id} className="last-row">
                                       <div className="last-info">
@@ -920,7 +966,7 @@ export default function App() {
                                                     <Fragment key={completion.id}>
                                                       {index > 0 && "・"}
                                                       <button type="button" className="undo-date-chip subtle" onClick={() => setUndoTargetId(completion.id)}>
-                                                        {formatShortDate(doneDateOf(completion, boundary))}
+                                                        {formatShortDate(doneDateOf(completion))}
                                                       </button>
                                                     </Fragment>
                                                   ))}
@@ -935,7 +981,7 @@ export default function App() {
                                       <RecordButton
                                         label="やった"
                                         className="did-button"
-                                        onTap={() => recordCompletion(item, todayLife, null)}
+                                        onTap={() => tapLastItem(item)}
                                         onLongPress={() => openDatePick(item, null)}
                                       />
                                     </div>
@@ -958,7 +1004,7 @@ export default function App() {
           <>
             <section className="section">
               <h2>集計</h2>
-              <p className="small-note">充実してる度の見える化。採点ではありません（週は{WEEKDAY_LABELS[data.settings.weekStartDay]}曜{boundary}始まり）</p>
+              <p className="small-note">充実してる度の見える化。採点ではありません（週は{WEEKDAY_LABELS[data.settings.weekStartDay]}曜始まり）</p>
               <div className="stats-controls">
                 <div className="segmented">
                   <button type="button" className={statsMode === "weekly" ? "active" : ""} onClick={() => { setStatsMode("weekly"); setStatsOffset(0); }}>週次</button>
@@ -1169,18 +1215,6 @@ export default function App() {
               <h2>時間の区切り</h2>
               <div className="form-grid-2">
                 <label>
-                  日付の境界
-                  <select
-                    value={boundary}
-                    onChange={(event) => setData((current) => ({ ...current, settings: { ...current.settings, dayBoundaryTime: event.target.value } }))}
-                  >
-                    {DAY_BOUNDARY_OPTIONS.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                  <span className="field-help">この時刻より前の記録は前日ぶんとして数えます</span>
-                </label>
-                <label>
                   週の開始曜日
                   <select
                     value={data.settings.weekStartDay}
@@ -1371,7 +1405,7 @@ export default function App() {
             <div className="dialog">
               <h3>この記録を取り消しますか？</h3>
               <p>
-                {completion.titleSnapshot}（{formatShortDate(doneDateOf(completion, boundary))}）
+                {completion.titleSnapshot}（{formatShortDate(doneDateOf(completion))}）
               </p>
               <p className="small-note">{backNote}記録を整える機能ではなく、押し間違いを戻すためのものです。</p>
               <div className="button-row dialog-actions">
@@ -1397,6 +1431,31 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* 深夜タップの確認（A2）。既定の選択は置かない（押し間違いでそのまま日付が入るのを避けるため） */}
+      {nightConfirmTarget && (() => {
+        const yesterdayKey = addDaysKey(todayLife, -1);
+        const title =
+          nightConfirmTarget.kind === "single"
+            ? nightConfirmTarget.stockEntry.label || nightConfirmTarget.item.title
+            : nightConfirmTarget.item.title;
+        return (
+          <div className="dialog-backdrop">
+            <div className="dialog">
+              <h3>昨日と今日、どちらの記録にしますか？</h3>
+              <p>{title}</p>
+              <p className="small-note">深夜0時〜5時のタップだけ、念のため確認しています。</p>
+              <div className="button-row dialog-actions">
+                <button type="button" onClick={() => resolveNightConfirm(yesterdayKey)}>昨日（{formatShortDate(yesterdayKey)}）</button>
+                <button type="button" onClick={() => resolveNightConfirm(todayLife)}>今日（{formatShortDate(todayLife)}）</button>
+              </div>
+              <div className="button-row dialog-actions">
+                <button type="button" onClick={() => setNightConfirmTarget(null)}>やめる</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {deleteTargetId && (() => {
         const item = data.items.find((entry) => entry.id === deleteTargetId);

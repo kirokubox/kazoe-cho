@@ -1,5 +1,5 @@
-import { WEEKDAY_LABELS } from "./constants";
-import type { Weekday } from "./types";
+import { WEEKDAY_LABELS } from "./constants.js";
+import type { Weekday } from "./types.js";
 
 // ----------------------------- 日付ユーティリティ -----------------------------
 
@@ -24,12 +24,10 @@ export function addDaysKey(key: string, days: number) {
   return dateKeyFromDate(addDays(dateFromKey(key), days));
 }
 
-// 「生活上の日付」：日付境界（既定05:00）より前は前日扱いにする
-export function lifeDateKey(date: Date, dayBoundaryTime: string) {
-  const [hoursText, minutesText] = dayBoundaryTime.split(":");
-  const boundaryMinutes = Number(hoursText) * 60 + Number(minutesText);
-  const currentMinutes = date.getHours() * 60 + date.getMinutes();
-  return dateKeyFromDate(currentMinutes < boundaryMinutes ? addDays(date, -1) : date);
+// 深夜タップ確認（A2）の対象時間帯かどうか：0:00〜4:59はtrue、5:00以降はfalse。
+// 旧・日付境界（既定05:00）と同じ範囲を「深夜」として扱う
+export function isDeepNightHour(date: Date) {
+  return date.getHours() * 60 + date.getMinutes() < 5 * 60;
 }
 
 export function nowLocalStamp() {

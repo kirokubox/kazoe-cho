@@ -112,6 +112,13 @@ export type DatePickTarget = {
   stockEntry?: StockEntry; // 単発在庫の消化なら対象エントリ
 };
 
+// 深夜（0:00〜5:00）のワンタップ記録を「昨日／今日」どちらとして数えるか確認するための対象（2026-09-20追加）。
+// 長押しの日付選択（DatePickTarget）とは別導線。確認後は同じ記録関数へ選んだ日を渡す
+export type NightConfirmTarget =
+  | { kind: "repeat"; item: Item; date: string } // 繰り返し在庫：対象日（date）は固定のまま、行動した日だけ選ぶ
+  | { kind: "single"; item: Item; stockEntry: StockEntry } // 単発在庫の消化
+  | { kind: "last"; item: Item }; // 前回日型：選んだ日がそのまま対象日
+
 // 在庫タブのグループカード内の1項目分。繰り返し在庫は対象日リスト、単発在庫は積みリストを持つ
 export type InventoryEntry =
   | { type: "repeat"; item: Item; dates: string[] }

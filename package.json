@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/dateUtils.test.js .test-build/tests/itemLogic.test.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
@@ -16,6 +17,7 @@
     "vite": "^8.1.3"
   },
   "devDependencies": {
+    "@types/node": "^24.12.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3"
   }

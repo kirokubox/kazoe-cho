@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": ".test-build"
+  },
+  "include": ["src/types.ts", "src/constants.ts", "src/dateUtils.ts", "src/itemLogic.ts", "tests/dateUtils.test.ts", "tests/itemLogic.test.ts"]
+}

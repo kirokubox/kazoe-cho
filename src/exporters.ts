@@ -64,7 +64,7 @@ export function buildMarkdownExport(data: AppData, todayLife: string) {
   const byWeek = new Map<string, Completion[]>();
   const byMonth = new Map<string, Completion[]>();
   for (const completion of data.completions) {
-    const doneDate = doneDateOf(completion, data.settings.dayBoundaryTime);
+    const doneDate = doneDateOf(completion);
     const weekKey = weekStartOf(doneDate, data.settings.weekStartDay);
     byWeek.set(weekKey, [...(byWeek.get(weekKey) ?? []), completion]);
     const monthKey = monthKeyOf(doneDate);
@@ -93,7 +93,7 @@ export function buildMarkdownExport(data: AppData, todayLife: string) {
   lines.push("");
   const sorted = [...data.completions].sort((a, b) => b.completedAt.localeCompare(a.completedAt));
   for (const completion of sorted) {
-    const doneDate = doneDateOf(completion, data.settings.dayBoundaryTime);
+    const doneDate = doneDateOf(completion);
     const note = completion.note ? `（${completion.note}）` : "";
     const count = completion.count !== null ? ` ×${completion.count}` : "";
     lines.push(`- ${doneDate} ${completion.titleSnapshot}${note}${count}｜対象日 ${completion.targetDate}`);

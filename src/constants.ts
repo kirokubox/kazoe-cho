@@ -1,4 +1,4 @@
-import type { AppData, Kind, Settings } from "./types";
+import type { AppData, Kind, Settings } from "./types.js";
 
 export const STORAGE_KEY = "yuki-kazoe-cho-data";
 export const ACTIVE_VIEW_KEY = "yuki-kazoe-cho-active-view";

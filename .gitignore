@@ -13,6 +13,9 @@ node_modules/
 dist/
 .DS_Store
 
+# テストコンパイル出力（npm test が tsc -p tsconfig.test.json で生成）
+.test-build/
+
 # 本人の実データ（バックアップ・エクスポート）はコミットしない
 kazoe-cho-backup-*.json
 kazoe-cho-export-*.md

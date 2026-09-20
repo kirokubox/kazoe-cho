@@ -1,6 +1,6 @@
-import { MAX_INVENTORY_LOOKBACK_DAYS } from "./constants";
-import { addDaysKey, dateFromKey, daysInMonth, lifeDateKey } from "./dateUtils";
-import type { Completion, Item, StatCategory, StatGroup, StatRow } from "./types";
+import { MAX_INVENTORY_LOOKBACK_DAYS } from "./constants.js";
+import { addDaysKey, dateFromKey, dateKeyFromDate, daysInMonth } from "./dateUtils.js";
+import type { Completion, Item, StatCategory, StatGroup, StatRow } from "./types.js";
 
 // ----------------------------- 表示ロジック -----------------------------
 
@@ -30,7 +30,7 @@ export function matchesRepeatRule(item: Item, date: Date) {
   return false;
 }
 
-// 在庫の対象日：起点日から今日（生活日付）まで全部を数え、完了済みを除く。
+// 在庫の対象日：起点日から今日（暦日）まで全部を数え、完了済みを除く。
 // 「何号から溜まっているか」を一望するのが価値なので、直近N件への省略はしない。
 export function inventoryDates(item: Item, completedKeys: Set<string>, todayLife: string) {
   const startKey = item.inventoryStartDate ?? item.createdAt.slice(0, 10);
@@ -66,11 +66,11 @@ export function latestCompletionAmong(completions: Completion[], itemIds: Set<st
   return latest;
 }
 
-// 集計に使う「行動した日」：記録時刻を日付境界で丸めた生活日付
-export function doneDateOf(completion: Completion, dayBoundaryTime: string) {
+// 集計に使う「行動した日」：記録時刻の暦日（2026-09-20に日付境界の丸めを廃止し、0時〜24時で区切る暦日へ統一）
+export function doneDateOf(completion: Completion) {
   const parsed = new Date(completion.completedAt);
   if (Number.isNaN(parsed.getTime())) return completion.targetDate;
-  return lifeDateKey(parsed, dayBoundaryTime);
+  return dateKeyFromDate(parsed);
 }
 
 export function quantityOf(completion: Completion) {
