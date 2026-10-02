@@ -1,6 +1,6 @@
-import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, CATEGORY_MIGRATION_MAP, DAY_BOUNDARY_OPTIONS, DEFAULT_CATEGORIES, DEFAULT_DATA, DEFAULT_SETTINGS, FOLD_STATE_KEY, KINDS, STORAGE_KEY } from "./constants";
-import { dateKeyFromDate } from "./dateUtils";
-import type { AppData, Completion, FoldState, Item, Kind, RepeatType, Settings, StockEntry, Tab, Weekday } from "./types";
+import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, CATEGORY_MIGRATION_MAP, DAY_BOUNDARY_OPTIONS, DEFAULT_CATEGORIES, DEFAULT_DATA, DEFAULT_SETTINGS, FOLD_STATE_KEY, KINDS, STORAGE_KEY } from "./constants.js";
+import { dateKeyFromDate } from "./dateUtils.js";
+import type { AppData, Completion, FoldState, Item, Kind, RepeatType, Settings, StockEntry, Tab, Weekday } from "./types.js";
 
 // ----------------------------- データ検証・保存 -----------------------------
 
@@ -54,6 +54,11 @@ export function migrateItem(value: unknown, remapCategory: boolean): Item | null
   const category = remapCategory ? (CATEGORY_MIGRATION_MAP[item.category] ?? item.category) : item.category;
   const group = typeof item.group === "string" && item.group.trim() !== "" ? item.group : null;
 
+  // 停止・削除の日時（追加フィールド）。旧データ（v1〜v3・停止中なのに stoppedAt なし）は updatedAt を停止日とみなして
+  // ここで書き込む。一度入れば以後は保存値が使われる（のちの編集で updatedAt が動いても停止日は動かない）＝冪等
+  const stoppedAt = item.isActive ? null : typeof item.stoppedAt === "string" && item.stoppedAt !== "" ? item.stoppedAt : item.updatedAt;
+  const deletedAt = typeof item.deletedAt === "string" && item.deletedAt !== "" ? item.deletedAt : null;
+
   return {
     id: item.id,
     title: item.title,
@@ -64,6 +69,8 @@ export function migrateItem(value: unknown, remapCategory: boolean): Item | null
     weekday: repeatType === "weekly" && isWeekdayValue(item.weekday) ? item.weekday : null,
     monthDay: repeatType === "monthly" && typeof item.monthDay === "number" ? item.monthDay : null,
     isActive: item.isActive,
+    stoppedAt,
+    deletedAt,
     inventoryStartDate,
     memo: item.memo,
     createdAt: item.createdAt,
@@ -162,7 +169,9 @@ export function normalizeAppData(raw: unknown): AppData | null {
   const stockEntries = Array.isArray(data.stockEntries) && data.stockEntries.every(isStockEntry) ? data.stockEntries : [];
   const settings = normalizeSettings(data.settings, legacy);
   // 項目が参照するカテゴリ・グループは、選択肢に必ず載せる（「箱がないから記録されない」を防ぐ）
+  // （削除済みの項目は選択肢の根拠にしない。残件が在庫に出るだけで、カテゴリ・グループは復活させない）
   for (const item of items) {
+    if (item.deletedAt !== null) continue;
     if (!settings.categories.includes(item.category)) settings.categories.push(item.category);
     if (item.group && !settings.groups.includes(item.group)) settings.groups.push(item.group);
   }

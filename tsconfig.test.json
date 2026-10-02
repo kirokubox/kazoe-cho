@@ -9,5 +9,5 @@
     "rootDir": ".",
     "outDir": ".test-build"
   },
-  "include": ["src/types.ts", "src/constants.ts", "src/dateUtils.ts", "src/itemLogic.ts", "tests/dateUtils.test.ts", "tests/itemLogic.test.ts"]
+  "include": ["src/types.ts", "src/constants.ts", "src/dateUtils.ts", "src/itemLogic.ts", "src/exporters.ts", "src/storage.ts", "tests/dateUtils.test.ts", "tests/itemLogic.test.ts", "tests/exporters.test.ts", "tests/storage.test.ts"]
 }

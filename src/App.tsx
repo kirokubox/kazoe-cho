@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ACTIVE_VIEW_KEY, BACKUP_NOTICE_KEY, FOLD_STATE_KEY, NEW_CATEGORY_VALUE, NEW_GROUP_VALUE, NO_GROUP_VALUE, STORAGE_KEY, WEEKDAY_LABELS } from "./constants";
-import { addDaysKey, dateKeyFromDate, diffDays, formatDateWithWeekday, formatMonthKey, formatShortDate, genId, isDeepNightHour, monthKeyOf, nowLocalStamp, shiftMonthKey, weekStartOf } from "./dateUtils";
-import { buildMarkdownExport, buildPeriodStatsMarkdown, downloadTextFile } from "./exporters";
-import { buildStatCategories, doneDateOf, inventoryDates, isInventoryItem, isRepeatStockItem, isSingleStockItem, latestCompletionAmong, recentCompletionsOf } from "./itemLogic";
+import { addDaysKey, dateKeyFromDate, diffDays, formatDateWithWeekday, formatShortDate, genId, isDeepNightHour, nowLocalStamp, periodOf, type PeriodKind } from "./dateUtils";
+import { aiMarkdownFileName, buildAiPeriodMarkdown, buildMarkdownExport, downloadTextFile } from "./exporters";
+import { buildStatCategories, doneDateOf, inventoryDates, isDeletedItem, isInventoryItem, isLiveItem, isRepeatStockItem, isSingleStockItem, itemStatusLabel, latestCompletionAmong, recentCompletionsOf } from "./itemLogic";
 import { convertOldBackup } from "./legacyImport";
 import { RecordButton } from "./RecordButton";
 import { loadActiveView, loadData, loadFoldState, normalizeAppData } from "./storage";
@@ -77,6 +77,10 @@ export default function App() {
   const [statsMode, setStatsMode] = useState<"weekly" | "monthly">("weekly");
   const [statsOffset, setStatsOffset] = useState(0);
 
+  // 設定タブ：AI用Markdown（週・月）の期間選択（集計タブの選択とは独立）
+  const [aiKind, setAiKind] = useState<PeriodKind>("week");
+  const [aiOffset, setAiOffset] = useState(0);
+
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data]);
@@ -101,7 +105,8 @@ export default function App() {
   // 在庫タブ：グループ1つ＝カード1枚（v3.1）。繰り返し在庫と単発在庫を同じグループにまとめる。
   // 在庫がある項目を上、在庫0の項目はグループカードの中の「在庫なし」に畳む（並べ替え機能は付けない）
   const inventoryGroups = useMemo(() => {
-    const stockItems = data.items.filter((item) => item.isActive && isInventoryItem(item));
+    // 停止中・削除済みの項目も、残件（未消化の対象日・積み）が1件でもあれば出す。残件0なら自然に消える
+    const stockItems = data.items.filter((item) => isInventoryItem(item));
     const byGroup = new Map<string, InventoryEntry[]>();
     for (const item of stockItems) {
       const entry: InventoryEntry = isSingleStockItem(item)
@@ -111,6 +116,7 @@ export default function App() {
             entries: data.stockEntries.filter((stock) => stock.itemId === item.id).sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
           }
         : { type: "repeat", item, dates: inventoryDates(item, completedKeys, todayLife) };
+      if (!isLiveItem(item) && (entry.type === "repeat" ? entry.dates.length === 0 : entry.entries.length === 0)) continue;
       const key = item.group ?? "";
       const list = byGroup.get(key) ?? [];
       list.push(entry);
@@ -155,14 +161,17 @@ export default function App() {
   const inventoryTotal = inventoryGroups.reduce((sum, group) => sum + group.totalDates + group.totalItems, 0);
   const recurringInventoryTotal = inventoryGroups.reduce((sum, group) => sum + group.totalDates, 0);
   const scheduledSingleItemIds = useMemo(
-    () => new Set(data.items.filter((item) => item.isActive && isSingleStockItem(item) && (item.group === "予定" || item.group === "音楽")).map((item) => item.id)),
+    () => new Set(data.items.filter((item) => isSingleStockItem(item) && (item.group === "予定" || item.group === "音楽")).map((item) => item.id)),
     [data.items],
   );
   const scheduledInventoryTotal = data.stockEntries.filter((entry) => scheduledSingleItemIds.has(entry.itemId)).length;
 
+  // 削除済みの項目は設定の項目一覧・件数・絞り込みの対象にしない（残件が在庫に出るだけ）
+  const visibleItems = useMemo(() => data.items.filter((item) => !isDeletedItem(item)), [data.items]);
+
   const filteredSettingsItems = useMemo(() => {
     const query = itemSearch.trim().toLocaleLowerCase("ja");
-    return data.items.filter((item) => {
+    return visibleItems.filter((item) => {
       const matchesQuery =
         query === "" ||
         item.title.toLocaleLowerCase("ja").includes(query) ||
@@ -179,12 +188,12 @@ export default function App() {
         (itemStockFilter === "none" && !item.isStock);
       return matchesQuery && matchesCategory && matchesGroup && matchesStock;
     });
-  }, [data.items, itemSearch, itemCategoryFilter, itemGroupFilter, itemStockFilter]);
+  }, [visibleItems, itemSearch, itemCategoryFilter, itemGroupFilter, itemStockFilter]);
 
   const lastItems = useMemo(
     () =>
       data.items
-        .filter((item) => item.isActive && !isInventoryItem(item))
+        .filter((item) => isLiveItem(item) && !isInventoryItem(item))
         .map((item) => ({ item, recent: recentCompletionsOf(data.completions, item.id, 3) })),
     [data.items, data.completions],
   );
@@ -496,7 +505,22 @@ export default function App() {
           settings: { ...current.settings, categories, groups },
           items: current.items.map((item) =>
             item.id === editingItemId
-              ? { ...item, title, category, group, isStock, repeatType, weekday, monthDay, inventoryStartDate, memo: draft.memo.trim(), isActive: draft.isActive, updatedAt: stamp }
+              ? {
+                  ...item,
+                  title,
+                  category,
+                  group,
+                  isStock,
+                  repeatType,
+                  weekday,
+                  monthDay,
+                  inventoryStartDate,
+                  memo: draft.memo.trim(),
+                  isActive: draft.isActive,
+                  // 停止にして保存した時点を停止日にする。停止のまま保存し直しても停止日は動かさず、有効に戻したら消す
+                  stoppedAt: draft.isActive ? null : (item.isActive ? stamp : (item.stoppedAt ?? item.updatedAt)),
+                  updatedAt: stamp,
+                }
               : item,
           ),
         };
@@ -511,6 +535,8 @@ export default function App() {
         weekday,
         monthDay,
         isActive: draft.isActive,
+        stoppedAt: draft.isActive ? null : stamp,
+        deletedAt: null,
         inventoryStartDate,
         memo: draft.memo.trim(),
         createdAt: stamp,
@@ -541,7 +567,7 @@ export default function App() {
 
   // グループ削除：項目が1件でも入っているグループは削除しない（UIで無効化済み）。空グループを選択肢から外すだけ
   function deleteGroup(name: string) {
-    if (data.items.some((item) => item.group === name)) return;
+    if (visibleItems.some((item) => item.group === name)) return;
     setData((current) => ({
       ...current,
       settings: { ...current.settings, groups: current.settings.groups.filter((group) => group !== name) },
@@ -582,14 +608,15 @@ export default function App() {
   }
 
   function deleteItem(itemId: string) {
-    // titleSnapshot 方式なので、項目を消しても完了ログと集計は残る。未消化の積みは箱と一緒に消す
+    // ソフト削除：deletedAt を入れるだけで、項目も未消化の残件（積み・対象日）も消さない。
+    // 以後は新しい対象日を増やさず、残件は在庫タブで完了まで出る（残件0で自然に消える）。完了ログと集計も残る
+    const stamp = nowLocalStamp();
     setData((current) => ({
       ...current,
-      items: current.items.filter((item) => item.id !== itemId),
-      stockEntries: current.stockEntries.filter((entry) => entry.itemId !== itemId),
+      items: current.items.map((item) => (item.id === itemId ? { ...item, deletedAt: stamp, updatedAt: stamp } : item)),
     }));
     setDeleteTargetId(null);
-    setMessage({ type: "success", text: "項目を削除しました（記録は残ります）" });
+    setMessage({ type: "success", text: "項目を削除しました（残りは在庫に出ます。記録は残ります）" });
   }
 
   // ----------------------------- 入出力 -----------------------------
@@ -605,11 +632,18 @@ export default function App() {
     setMessage({ type: "success", text: "Markdownをエクスポートしました" });
   }
 
-  // 集計タブ：いま画面に表示中の期間だけをMarkdownエクスポート（v3.4）。全件エクスポートとは用途が違うので併存させる
-  function exportPeriodMarkdown() {
-    const filename = `kazoe-cho-集計-${statsPeriod.fileLabel}.md`;
-    downloadTextFile(filename, buildPeriodStatsMarkdown(statsPeriod.label, statCategories, statsTotalCount, statsTotalQuantity), "text/markdown");
-    setMessage({ type: "success", text: "Markdownをエクスポートしました" });
+  // 設定タブ：AI用Markdown（週・月）。集計タブと同じ期間計算・週開始曜日設定に従い、明細つきで書き出す
+  function exportAiMarkdown() {
+    const text = buildAiPeriodMarkdown({
+      period: aiPeriod,
+      completions: data.completions,
+      exportedAt: nowLocalStamp(),
+      weekStartDayLabel: WEEKDAY_LABELS[data.settings.weekStartDay],
+      categoriesOrder: data.settings.categories,
+      groupsOrder: data.settings.groups,
+    });
+    downloadTextFile(aiMarkdownFileName(aiPeriod), text, "text/markdown");
+    setMessage({ type: "success", text: "AI用Markdownをエクスポートしました" });
   }
 
   function handleImportFile(file: File) {
@@ -679,11 +713,11 @@ export default function App() {
     if (!importPreview) return;
     setData((current) => {
       const categories = [...current.settings.categories];
-      for (const category of [...importPreview.incomingCategories, ...importPreview.incomingItems.map((item) => item.category)]) {
+      for (const category of [...importPreview.incomingCategories, ...importPreview.incomingItems.filter((item) => !isDeletedItem(item)).map((item) => item.category)]) {
         if (!categories.includes(category)) categories.push(category);
       }
       const groups = [...current.settings.groups];
-      for (const group of [...importPreview.incomingGroups, ...importPreview.incomingItems.map((item) => item.group)]) {
+      for (const group of [...importPreview.incomingGroups, ...importPreview.incomingItems.filter((item) => !isDeletedItem(item)).map((item) => item.group)]) {
         if (group && !groups.includes(group)) groups.push(group);
       }
       return {
@@ -705,25 +739,14 @@ export default function App() {
 
   // ----------------------------- 集計 -----------------------------
 
-  const statsPeriod = useMemo(() => {
-    if (statsMode === "weekly") {
-      const currentStart = weekStartOf(todayLife, data.settings.weekStartDay);
-      const start = addDaysKey(currentStart, -7 * statsOffset);
-      const end = addDaysKey(start, 6);
-      return {
-        label: `${formatDateWithWeekday(start)}〜${formatDateWithWeekday(end)}`,
-        // 期間エクスポートのファイル名用（YYYY-MM-DD〜YYYY-MM-DD）。表示ラベルは曜日つきなのでファイル名には使わない
-        fileLabel: `${start}〜${end}`,
-        contains: (doneDate: string) => doneDate >= start && doneDate <= end,
-      };
-    }
-    const monthKey = shiftMonthKey(monthKeyOf(todayLife), -statsOffset);
-    return {
-      label: formatMonthKey(monthKey),
-      fileLabel: monthKey,
-      contains: (doneDate: string) => monthKeyOf(doneDate) === monthKey,
-    };
-  }, [statsMode, statsOffset, todayLife, data.settings.weekStartDay]);
+  const statsPeriod = useMemo(
+    () => periodOf(statsMode === "weekly" ? "week" : "month", statsOffset, todayLife, data.settings.weekStartDay),
+    [statsMode, statsOffset, todayLife, data.settings.weekStartDay],
+  );
+  const aiPeriod = useMemo(
+    () => periodOf(aiKind, aiOffset, todayLife, data.settings.weekStartDay),
+    [aiKind, aiOffset, todayLife, data.settings.weekStartDay],
+  );
 
   const statsCompletions = useMemo(
     () => data.completions.filter((completion) => statsPeriod.contains(doneDateOf(completion))),
@@ -809,10 +832,16 @@ export default function App() {
                   )}
                   {group.stocked.length > 0 && <div className="card-divider" />}
                   {group.stocked.map((entry) => {
-                    const showSub = entry.item.title !== (group.group ?? "");
+                    const status = itemStatusLabel(entry.item);
+                    const showSub = entry.item.title !== (group.group ?? "") || status !== null;
                     return (
                       <div key={entry.item.id} className="inv-item-block">
-                        {showSub && <p className="inv-item-title">{entry.item.title}</p>}
+                        {showSub && (
+                          <p className="inv-item-title">
+                            {entry.item.title}
+                            {status && <span className="status-badge">{status}</span>}
+                          </p>
+                        )}
                         {entry.type === "repeat" ? (
                           <div className="inventory-date-list">
                             {entry.dates.map((date) => (
@@ -851,14 +880,17 @@ export default function App() {
                                 </div>
                               ))}
                             </div>
-                            <div className="stock-add-row">
-                              <input
-                                value={stockDrafts[entry.item.id] ?? ""}
-                                onChange={(event) => setStockDrafts((current) => ({ ...current, [entry.item.id]: event.target.value }))}
-                                placeholder="例：国宝（積むものの名前）"
-                              />
-                              <button type="button" className="primary-button" onClick={() => addStockEntry(entry.item)}>積む</button>
-                            </div>
+                            {/* 停止中・削除済みは新しく積めない（残件を消化するだけ） */}
+                            {isLiveItem(entry.item) && (
+                              <div className="stock-add-row">
+                                <input
+                                  value={stockDrafts[entry.item.id] ?? ""}
+                                  onChange={(event) => setStockDrafts((current) => ({ ...current, [entry.item.id]: event.target.value }))}
+                                  placeholder="例：国宝（積むものの名前）"
+                                />
+                                <button type="button" className="primary-button" onClick={() => addStockEntry(entry.item)}>積む</button>
+                              </div>
+                            )}
                           </>
                         )}
                       </div>
@@ -1055,10 +1087,6 @@ export default function App() {
                 </table>
               </section>
             ))}
-            <section className="section">
-              <button type="button" className="primary-button" onClick={exportPeriodMarkdown}>この期間をMarkdownエクスポート</button>
-              <p className="small-note">今表示している期間（{statsPeriod.label}）だけを書き出します。全件のエクスポートは設定タブにあります</p>
-            </section>
           </>
         )}
 
@@ -1066,7 +1094,7 @@ export default function App() {
           <>
             <section className="section">
               <button type="button" className="settings-section-head" onClick={() => setItemsSectionOpen((value) => !value)}>
-                <h2>項目 {data.items.length}件</h2>
+                <h2>項目 {visibleItems.length}件</h2>
                 <span className="chip-caret">{itemsSectionOpen ? "▲" : "▼"}</span>
               </button>
               {itemsSectionOpen && (
@@ -1110,7 +1138,7 @@ export default function App() {
                         </select>
                       </label>
                     </div>
-                    <p className="item-filter-count">{filteredSettingsItems.length} / {data.items.length}件</p>
+                    <p className="item-filter-count">{filteredSettingsItems.length} / {visibleItems.length}件</p>
                   </div>
                   <div className="item-list">
                     {filteredSettingsItems.map((item) => {
@@ -1138,8 +1166,8 @@ export default function App() {
                         </div>
                       );
                     })}
-                    {data.items.length === 0 && <p className="empty-text">項目はまだありません。</p>}
-                    {data.items.length > 0 && filteredSettingsItems.length === 0 && <p className="empty-text">条件に合う項目はありません。</p>}
+                    {visibleItems.length === 0 && <p className="empty-text">項目はまだありません。</p>}
+                    {visibleItems.length > 0 && filteredSettingsItems.length === 0 && <p className="empty-text">条件に合う項目はありません。</p>}
                   </div>
                 </div>
               )}
@@ -1163,7 +1191,7 @@ export default function App() {
                   </div>
                   <div className="item-list">
                     {data.settings.groups.map((group) => {
-                      const hasMembers = data.items.some((item) => item.group === group);
+                      const hasMembers = visibleItems.some((item) => item.group === group);
                       return (
                         <div key={group} className="item-row">
                           <div className="item-row-info">
@@ -1206,7 +1234,23 @@ export default function App() {
                 </div>
                 <div className="data-action-block">
                   <button type="button" onClick={exportMarkdown}>Markdownエクスポート</button>
-                  <p className="small-note">週次・月次の件数入り。AIに読ませる分析用</p>
+                  <p className="small-note">全期間の項目一覧・週次・月次の件数・完了ログ入り。バックアップ・閲覧用</p>
+                </div>
+                <div className="data-action-block">
+                  <strong>AI用Markdown（週・月）</strong>
+                  <p className="small-note">集計に加えて、記録を1件ずつ（日付・記録時刻・対象日・メモ付き）書き出します。AIに読ませる分析用です（週は{WEEKDAY_LABELS[data.settings.weekStartDay]}曜始まり）</p>
+                  <div className="stats-controls">
+                    <div className="segmented">
+                      <button type="button" className={aiKind === "week" ? "active" : ""} onClick={() => { setAiKind("week"); setAiOffset(0); }}>週</button>
+                      <button type="button" className={aiKind === "month" ? "active" : ""} onClick={() => { setAiKind("month"); setAiOffset(0); }}>月</button>
+                    </div>
+                    <div className="period-nav">
+                      <button type="button" onClick={() => setAiOffset((value) => value + 1)}>◀ 前</button>
+                      <span className="period-label">{aiPeriod.label}</span>
+                      <button type="button" disabled={aiOffset === 0} onClick={() => setAiOffset((value) => Math.max(0, value - 1))}>次 ▶</button>
+                    </div>
+                  </div>
+                  <button type="button" className="primary-button" onClick={exportAiMarkdown}>この期間をAI用Markdownで書き出す</button>
                 </div>
               </div>
             </section>
@@ -1465,7 +1509,8 @@ export default function App() {
           <div className="dialog-backdrop">
             <div className="dialog">
               <h3>「{item?.title ?? "この項目"}」を削除します</h3>
-              {stockCount > 0 && <p>積んだもの {stockCount}件 も一緒に消えます。</p>}
+              <p>これ以降、新しい対象日や積みは増えません。設定の項目一覧と前回タブからも消えます。</p>
+              <p>まだ消化していない分{stockCount > 0 ? `（積んだもの ${stockCount}件 を含む）` : ""}は消えず、完了するまで在庫タブに「削除済み」として出ます。</p>
               <p>完了ログ {logCount}件 は残ります（集計にも出ます）。</p>
               <div className="button-row dialog-actions">
                 <button type="button" className="danger-button" onClick={() => deleteItem(deleteTargetId)}>削除する</button>

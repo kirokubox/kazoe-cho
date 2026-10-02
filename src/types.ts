@@ -14,6 +14,12 @@ export type Item = {
   weekday: Weekday | null;
   monthDay: number | null;
   isActive: boolean;
+  // 停止した日時（isActive を false にして保存した時刻。true に戻すと null）。停止後は新しい対象日・積みを増やさず、
+  // 停止時点までの残件だけ在庫に残して完了できる。旧データ（停止中なのにこの値が無い）は読み込み時に updatedAt を入れる
+  stoppedAt: string | null;
+  // 削除した日時（ソフト削除。null＝削除していない）。削除後は新しい対象日を増やさず、未消化の残件は完了まで在庫に出る。
+  // 設定の項目一覧・前回タブ・項目編集の対象には出さない。完了ログは保持
+  deletedAt: string | null;
   inventoryStartDate?: string;
   memo: string;
   createdAt: string;

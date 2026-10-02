@@ -46,6 +46,7 @@ h1 { margin: 0; font-size: clamp(1.9rem, 7vw, 2.8rem); line-height: 1.05; color:
 /* v3.1 グループカード：グループ内の各項目ブロックと、前回1行の下の区切り線 */
 .card-divider { height: 1px; background: #e3eef6; margin: 0.15rem 0; }
 .inv-item-block { display: grid; gap: 0.4rem; }
+.status-badge { display: inline-block; margin-left: 0.45rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: #eceff2; color: #5d6b76; font-size: 0.72rem; font-weight: 700; vertical-align: middle; }
 .inv-item-title { margin: 0.2rem 0 0; font-weight: 750; font-size: 0.98rem; color: #33566f; }
 /* 単発在庫の積み行：取り下げる＋楽しんだの2ボタン */
 .single-entry-row .entry-actions { display: flex; gap: 0.35rem; align-items: center; }

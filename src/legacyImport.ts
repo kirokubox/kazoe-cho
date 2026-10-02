@@ -27,6 +27,8 @@ export function convertOldBackup(raw: Record<string, unknown>): { items: Item[];
     const isStock = oldKind === "楽しみ";
     const repeatType: RepeatType = isStock ? (task.repeatType === "monthly" ? "monthly" : "weekly") : "none";
     const oldCategory = typeof task.category === "string" ? task.category : "その他";
+    const isActive = task.isActive !== false;
+    const updatedAt = typeof task.updatedAt === "string" ? task.updatedAt : nowLocalStamp();
     items.push({
       id: task.id,
       title: task.title,
@@ -36,11 +38,13 @@ export function convertOldBackup(raw: Record<string, unknown>): { items: Item[];
       repeatType,
       weekday: repeatType === "weekly" && isWeekdayValue(task.weekday) ? task.weekday : null,
       monthDay: repeatType === "monthly" && typeof task.monthDay === "number" ? task.monthDay : null,
-      isActive: task.isActive !== false,
+      isActive,
+      stoppedAt: isActive ? null : updatedAt,
+      deletedAt: null,
       inventoryStartDate: isStock && typeof task.inventoryStartDate === "string" ? task.inventoryStartDate : undefined,
       memo: typeof task.memo === "string" ? task.memo : "",
       createdAt: typeof task.createdAt === "string" ? task.createdAt : nowLocalStamp(),
-      updatedAt: typeof task.updatedAt === "string" ? task.updatedAt : nowLocalStamp(),
+      updatedAt,
     });
   }
 

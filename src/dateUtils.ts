@@ -81,3 +81,41 @@ export function genId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+// 週・月の期間。offset は「今の期間から何期間前か」（0＝今の週/月）。
+// 集計タブと、設定のAI用Markdown（週・月）の両方がこの1つの計算を使う（週開始曜日の設定に従う）
+export type PeriodKind = "week" | "month";
+
+export type Period = {
+  kind: PeriodKind;
+  label: string; // 画面表示用（週は曜日つき）
+  startKey: string; // YYYY-MM-DD（期間の最初の日）
+  endKey: string; // YYYY-MM-DD（期間の最後の日）
+  contains: (doneDate: string) => boolean;
+};
+
+export function periodOf(kind: PeriodKind, offset: number, todayKey: string, weekStartDay: Weekday): Period {
+  if (kind === "week") {
+    const currentStart = weekStartOf(todayKey, weekStartDay);
+    const startKey = addDaysKey(currentStart, -7 * offset);
+    const endKey = addDaysKey(startKey, 6);
+    return {
+      kind,
+      label: `${formatDateWithWeekday(startKey)}〜${formatDateWithWeekday(endKey)}`,
+      startKey,
+      endKey,
+      contains: (doneDate) => doneDate >= startKey && doneDate <= endKey,
+    };
+  }
+  const monthKey = shiftMonthKey(monthKeyOf(todayKey), -offset);
+  const [yearText, monthText] = monthKey.split("-");
+  const startKey = `${monthKey}-01`;
+  const endKey = `${monthKey}-${String(daysInMonth(Number(yearText), Number(monthText) - 1)).padStart(2, "0")}`;
+  return {
+    kind,
+    label: formatMonthKey(monthKey),
+    startKey,
+    endKey,
+    contains: (doneDate) => monthKeyOf(doneDate) === monthKey,
+  };
+}

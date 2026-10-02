@@ -20,6 +20,41 @@ export function isRepeatStockItem(item: Item) {
   return item.isStock && (item.repeatType === "weekly" || item.repeatType === "monthly");
 }
 
+// ----------------------------- 停止・削除と残件 -----------------------------
+// 方針：「新しい対象を増やすか」と「すでにある残件を見せるか」を分ける。
+// 停止・削除した項目は、以後の新しい対象日・積みを増やさないが、その時点までの残件は完了まで在庫に出す。
+
+export function isDeletedItem(item: Item) {
+  return item.deletedAt !== null;
+}
+
+// 停止日時。停止中（isActive=false）で stoppedAt が無い旧データは updatedAt を停止日とみなす
+export function stoppedAtOf(item: Item): string | null {
+  if (item.isActive) return null;
+  return item.stoppedAt ?? item.updatedAt;
+}
+
+// 通常どおり新しい対象を増やす項目（有効かつ未削除）
+export function isLiveItem(item: Item) {
+  return item.isActive && !isDeletedItem(item);
+}
+
+// 在庫タブでの状態ラベル。削除済みを優先する。通常は null
+export function itemStatusLabel(item: Item): "停止中" | "削除済み" | null {
+  if (isDeletedItem(item)) return "削除済み";
+  if (!item.isActive) return "停止中";
+  return null;
+}
+
+// 繰り返し在庫の対象日を数える最終日：今日、停止日、削除日のうち一番早い日（その日を含む）
+export function inventoryEndKey(item: Item, todayLife: string) {
+  let end = todayLife;
+  for (const stamp of [stoppedAtOf(item), item.deletedAt]) {
+    if (stamp && stamp.length >= 10 && stamp.slice(0, 10) < end) end = stamp.slice(0, 10);
+  }
+  return end;
+}
+
 export function matchesRepeatRule(item: Item, date: Date) {
   if (item.repeatType === "weekly") return item.weekday !== null && date.getDay() === item.weekday;
   if (item.repeatType === "monthly") {
@@ -30,14 +65,15 @@ export function matchesRepeatRule(item: Item, date: Date) {
   return false;
 }
 
-// 在庫の対象日：起点日から今日（暦日）まで全部を数え、完了済みを除く。
+// 在庫の対象日：起点日から今日（暦日）まで全部を数え、完了済みを除く。停止・削除済みなら停止日／削除日で打ち切る。
 // 「何号から溜まっているか」を一望するのが価値なので、直近N件への省略はしない。
 export function inventoryDates(item: Item, completedKeys: Set<string>, todayLife: string) {
   const startKey = item.inventoryStartDate ?? item.createdAt.slice(0, 10);
   const floorKey = addDaysKey(todayLife, -MAX_INVENTORY_LOOKBACK_DAYS);
   let cursor = startKey < floorKey ? floorKey : startKey;
   const dates: string[] = [];
-  while (cursor <= todayLife) {
+  const endKey = inventoryEndKey(item, todayLife);
+  while (cursor <= endKey) {
     if (matchesRepeatRule(item, dateFromKey(cursor)) && !completedKeys.has(`${item.id}:${cursor}`)) {
       dates.push(cursor);
     }
